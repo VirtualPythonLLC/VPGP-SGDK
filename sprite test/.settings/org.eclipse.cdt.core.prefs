@@ -1,0 +1,15 @@
+eclipse.preferences.version=1
+environment/project/cdt.managedbuild.config.gnu.cross.exe.release.81115102/CWD/delimiter=;
+environment/project/cdt.managedbuild.config.gnu.cross.exe.release.81115102/CWD/operation=replace
+environment/project/cdt.managedbuild.config.gnu.cross.exe.release.81115102/CWD/value=C\:/genesis/sprite test
+environment/project/cdt.managedbuild.config.gnu.cross.exe.release.81115102/GDK/delimiter=;
+environment/project/cdt.managedbuild.config.gnu.cross.exe.release.81115102/GDK/operation=replace
+environment/project/cdt.managedbuild.config.gnu.cross.exe.release.81115102/GDK/value=C\:/genesis/sdk
+environment/project/cdt.managedbuild.config.gnu.cross.exe.release.81115102/PATH/delimiter=;
+environment/project/cdt.managedbuild.config.gnu.cross.exe.release.81115102/PATH/operation=replace
+environment/project/cdt.managedbuild.config.gnu.cross.exe.release.81115102/PATH/value=C\:\\genesis\\sdk\\bin
+environment/project/cdt.managedbuild.config.gnu.cross.exe.release.81115102/PWD/delimiter=;
+environment/project/cdt.managedbuild.config.gnu.cross.exe.release.81115102/PWD/operation=replace
+environment/project/cdt.managedbuild.config.gnu.cross.exe.release.81115102/PWD/value=C\:/genesis/sprite test
+environment/project/cdt.managedbuild.config.gnu.cross.exe.release.81115102/append=true
+environment/project/cdt.managedbuild.config.gnu.cross.exe.release.81115102/appendContributed=true

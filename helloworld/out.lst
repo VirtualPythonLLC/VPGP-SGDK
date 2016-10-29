@@ -1,0 +1,2419 @@
+0001   0000             ; Custom single ADPCM sample player Z80 driver for the BadApple demo.
+0002   0000             ; Output rate is fixed at 13000 Hz to keep sample size fit in rom.
+0003   0000             ; address and size of sample have to be 256 bytes boundary.
+0004   0000             ; Stéphane Dallongeville @2012
+0005   0000             ;
+0006   0000             ; We take Z80 clock = 3.575 Mhz as the demo work only on NTSC system (30 FPS playback).
+0007   0000             ;
+0008   0000             ; we round to 275 cycles per sample output.
+0009   0000             ;
+0010   0000             ; register usage :
+0011   0000             ; BC  = sample source (in ROM)
+0012   0000             ; DE  = write buffer
+0013   0000             ; HL  = ADPCM delta table (H = $06 = high byte address / 2)
+0014   0000             ; A'  = current sample level (unpacking)
+0015   0000             ; BC' = read buffer
+0016   0000             ; DE' = YMPORT1 (for DAC output)
+0017   0000             ; L'  = $80 (fast unsign)
+0018   0000             ; IXL = loop counter
+0019   0000             ; IXH = overflow
+0020   0000             
+0021   0000             
+0022   0000             ; ###########################      define      ##############################
+0023   0000             
+0024   0000                         INCLUDE "z80_def.i80"   ; basic definitions
+0001+  0000             ; ############################ define ##############################
+0002+  0000             
+0003+  0000             YMPORT0     EQU     $4000           ; YM2612 port 0
+0004+  0000             YMPORT1     EQU     $4001           ; YM2612 port 1
+0005+  0000             YMPORT2     EQU     $4002           ; YM2612 port 2
+0006+  0000             YMPORT3     EQU     $4003           ; YM2612 port 3
+0007+  0000             VDPSTATUS_H EQU     $7F04           ; VDP status port high
+0008+  0000             VDPSTATUS_L EQU     $7F05           ; VDP status port low
+0009+  0000             VCOUNTER    EQU     $7F08           ; V counter
+0010+  0000             HCOUNTER    EQU     $7F09           ; H counter
+0011+  0000             PSGPORT     EQU     $7F11           ; PSG port
+0012+  0000             BANKREG     EQU     $6000           ; bank register
+0013+  0000             
+0014+  0000             COMPLAY_SFT EQU     0               ; start play command
+0015+  0000             COMSTOP_SFT EQU     4               ; stop play command
+0016+  0000             
+0017+  0000             STATPLAY_SFT  EQU   0               ; playing status
+0018+  0000             STATREADY_SFT EQU   7               ; driver ready status
+0019+  0000             
+0020+  0000             CH0_SFT     EQU     0               ; channel 0
+0021+  0000             CH1_SFT     EQU     1               ; channel 1
+0022+  0000             CH2_SFT     EQU     2               ; channel 2
+0023+  0000             CH3_SFT     EQU     3               ; channel 3
+0024+  0000             
+0025+  0000             COMPLAY     EQU     1<<COMPLAY_SFT
+0026+  0000             COMSTOP     EQU     1<<COMSTOP_SFT
+0027+  0000             
+0028+  0000             STATPLAY    EQU     1<<STATPLAY_SFT
+0029+  0000             STATREADY   EQU     1<<STATREADY_SFT
+0030+  0000             
+0031+  0000             CH0         EQU     1<<CH0_SFT
+0032+  0000             CH1         EQU     1<<CH1_SFT
+0033+  0000             CH2         EQU     1<<CH2_SFT
+0034+  0000             CH3         EQU     1<<CH3_SFT
+0035+  0000             
+0036+  0000             
+0037+  0000             ; ########################### variable #############################
+0038+  0000             
+0039+  0000             COMMAND     EQU     $0100           ; command from 68K
+0040+  0000             STATUS      EQU     $0102           ; status from Z80
+0041+  0000             PARAMS      EQU     $0104           ; parameters (68K and Z80)
+0025   0000             
+0026   0000             
+0027   0000             ; ###########################       var        ##############################
+0028   0000             
+0029   0000             WAVADR      EQU     PARAMS+$00      ; WAV address (bit 8 --> bit 23)
+0030   0000             WAVLEN      EQU     PARAMS+$02      ; WAV lenght (bit 8 --> bit 23)
+0031   0000             IWAVADR     EQU     PARAMS+$10      ; internal WAV address (bit 8 --> bit 23)
+0032   0000             IWAVLEN     EQU     PARAMS+$12      ; internal WAV lenght (bit 8 --> bit 23)
+0033   0000             
+0034   0000             NULLWAVADR  EQU     PARAMS+$20      ; silent WAV adr
+0035   0000             NULLWAVLEN  EQU     PARAMS+$22      ; silent WAV len
+0036   0000             
+0037   0000             WAVBUFFER0  EQU     $1800           ; WAV buffer 0
+0038   0000             WAVBUFFER1  EQU     $1900           ; WAV buffer 1
+0039   0000             WAVBUFFER2  EQU     $1A00           ; WAV buffer 2
+0040   0000             WAVBUFFER3  EQU     $1B00           ; WAV buffer 3
+0041   0000             
+0042   0000             
+0043   0000             ; ###########################      macro       ##############################
+0044   0000             
+0045   0000                         INCLUDE "z80_mac.i80"  ; basic macros
+0001+  0000             ; ############################     macro     ##############################
+0002+  0000             
+0003+  0000             
+0004+  0000             ; setBank
+0005+  0000             ; -------
+0006+  0000             ; A    -> bit 22-15 of rom address to set in the bank register
+0007+  0000             ; HL  <-  BANKREG
+0008+  0000             ;
+0009+  0000             ; set the bank register for ROM area
+0010+  0000             ; = 101 cycles
+0011+  0000             
+0012+  0000                         macro   setBank
+0013+  0000~            
+0014+  0000~                        LD  HL, BANKREG         ; HL = BANKREG              ' 10
+0015+  0000~                        LD  (HL), A             ; #1 (bit 15)               ' 7
+0016+  0000~                        RRA                     ;                           ' 4
+0017+  0000~                        LD  (HL), A             ; #2 (bit 16)               ' 7
+0018+  0000~                        RRA                     ;                           ' 4
+0019+  0000~                        LD  (HL), A             ; #3 (bit 17)               ' 7
+0020+  0000~                        RRA                     ;                           ' 4
+0021+  0000~                        LD  (HL), A             ; #4 (bit 18)               ' 7
+0022+  0000~                        RRA                     ;                           ' 4
+0023+  0000~                        LD  (HL), A             ; #5 (bit 19)               ' 7
+0024+  0000~                        RRA                     ;                           ' 4
+0025+  0000~                        LD  (HL), A             ; #6 (bit 20)               ' 7
+0026+  0000~                        RRA                     ;                           ' 4
+0027+  0000~                        LD  (HL), A             ; #7 (bit 21)               ' 7
+0028+  0000~                        RRA                     ;                           ' 4
+0029+  0000~                        LD  (HL), A             ; #8 (bit 22)               ' 7
+0030+  0000~                        LD  (HL), L             ; #9 (bit 23 = 0)           ' 7
+0031+  0000~            
+0032+  0000                         endm                    ;                           ' 101
+0033+  0000             
+0034+  0000             
+0035+  0000             ; setBankFast
+0036+  0000             ; -----------
+0037+  0000             ; A    -> bit 21-15 of rom address to set in the bank register
+0038+  0000             ; HL  <-  BANKREG
+0039+  0000             ;
+0040+  0000             ; set the bank register for ROM area
+0041+  0000             ; = 97 cycles
+0042+  0000             
+0043+  0000                         macro   setBankFast
+0044+  0000~            
+0045+  0000~                        LD  HL, BANKREG         ; HL = BANKREG              ' 10
+0046+  0000~                        LD  (HL), A             ; #1 (bit 15)               ' 7
+0047+  0000~                        RRA                     ;                           ' 4
+0048+  0000~                        LD  (HL), A             ; #2 (bit 16)               ' 7
+0049+  0000~                        RRA                     ;                           ' 4
+0050+  0000~                        LD  (HL), A             ; #3 (bit 17)               ' 7
+0051+  0000~                        RRA                     ;                           ' 4
+0052+  0000~                        LD  (HL), A             ; #4 (bit 18)               ' 7
+0053+  0000~                        RRA                     ;                           ' 4
+0054+  0000~                        LD  (HL), A             ; #5 (bit 19)               ' 7
+0055+  0000~                        RRA                     ;                           ' 4
+0056+  0000~                        LD  (HL), A             ; #6 (bit 20)               ' 7
+0057+  0000~                        RRA                     ;                           ' 4
+0058+  0000~                        LD  (HL), A             ; #7 (bit 21)               ' 7
+0059+  0000~                        LD  (HL), L             ; #8 (bit 22 = 0)           ' 7
+0060+  0000~                        LD  (HL), L             ; #9 (bit 23 = 0)           ' 7
+0061+  0000~            
+0062+  0000                         endm                    ;                           ' 97
+0063+  0000             
+0064+  0000             
+0065+  0000             ; setBank_BC
+0066+  0000             ; ----------
+0067+  0000             ; A    -> bit 22-15 of rom address to set in the bank register
+0068+  0000             ; BC  <-  BANKREG
+0069+  0000             ; A   <-  0
+0070+  0000             ;
+0071+  0000             ; set the bank register for ROM area
+0072+  0000             ; = 105 cycles
+0073+  0000             
+0074+  0000                         macro   setBank_BC
+0075+  0000~            
+0076+  0000~                        LD  BC, BANKREG         ; BC = BANKREG              ' 10
+0077+  0000~                        LD  (BC), A             ; #1 (bit 15)               ' 7
+0078+  0000~                        RRA                     ;                           ' 4
+0079+  0000~                        LD  (BC), A             ; #2 (bit 16)               ' 7
+0080+  0000~                        RRA                     ;                           ' 4
+0081+  0000~                        LD  (BC), A             ; #3 (bit 17)               ' 7
+0082+  0000~                        RRA                     ;                           ' 4
+0083+  0000~                        LD  (BC), A             ; #4 (bit 18)               ' 7
+0084+  0000~                        RRA                     ;                           ' 4
+0085+  0000~                        LD  (BC), A             ; #5 (bit 19)               ' 7
+0086+  0000~                        RRA                     ;                           ' 4
+0087+  0000~                        LD  (BC), A             ; #6 (bit 20)               ' 7
+0088+  0000~                        RRA                     ;                           ' 4
+0089+  0000~                        LD  (BC), A             ; #7 (bit 21)               ' 7
+0090+  0000~                        RRA                     ;                           ' 4
+0091+  0000~                        LD  (BC), A             ; #8 (bit 22)               ' 7
+0092+  0000~                        RRA                     ;                           ' 4
+0093+  0000~                        LD  (BC), A             ; #9 (bit 23 = 0)           ' 7
+0094+  0000~            
+0095+  0000                         endm                    ;                           ' 105
+0096+  0000             
+0097+  0000             
+0098+  0000             ; setBank_DE
+0099+  0000             ; ----------
+0100+  0000             ; A    -> bit 22-15 of rom address to set in the bank register
+0101+  0000             ; DE  <-  BANKREG
+0102+  0000             ; A   <-  0
+0103+  0000             ;
+0104+  0000             ; set the bank register for ROM area
+0105+  0000             ; = 105 cycles
+0106+  0000             
+0107+  0000                         macro   setBank_DE
+0108+  0000~            
+0109+  0000~                        LD  DE, BANKREG         ; DE = BANKREG              ' 10
+0110+  0000~                        LD  (DE), A             ; #1 (bit 15)               ' 7
+0111+  0000~                        RRA                     ;                           ' 4
+0112+  0000~                        LD  (DE), A             ; #2 (bit 16)               ' 7
+0113+  0000~                        RRA                     ;                           ' 4
+0114+  0000~                        LD  (DE), A             ; #3 (bit 17)               ' 7
+0115+  0000~                        RRA                     ;                           ' 4
+0116+  0000~                        LD  (DE), A             ; #4 (bit 18)               ' 7
+0117+  0000~                        RRA                     ;                           ' 4
+0118+  0000~                        LD  (DE), A             ; #5 (bit 19)               ' 7
+0119+  0000~                        RRA                     ;                           ' 4
+0120+  0000~                        LD  (DE), A             ; #6 (bit 20)               ' 7
+0121+  0000~                        RRA                     ;                           ' 4
+0122+  0000~                        LD  (DE), A             ; #7 (bit 21)               ' 7
+0123+  0000~                        RRA                     ;                           ' 4
+0124+  0000~                        LD  (DE), A             ; #8 (bit 22)               ' 7
+0125+  0000~                        RRA                     ;                           ' 4
+0126+  0000~                        LD  (DE), A             ; #9 (bit 23 = 0)           ' 7
+0127+  0000~            
+0128+  0000                         endm                    ;                           ' 105
+0129+  0000             
+0130+  0000             
+0131+  0000             ; writeYMFast
+0132+  0000             ; -----------
+0133+  0000             ; HL  <-> YM port where to write
+0134+  0000             ; D    -> address
+0135+  0000             ; E    -> value
+0136+  0000             ;
+0137+  0000             ; write to YM2612 (no busy check)
+0138+  0000             ; = 26 cycles
+0139+  0000             
+0140+  0000                         macro   writeYMFast
+0141+  0000~            
+0142+  0000~                        LD      (HL), D         ; write address             ' 7     |
+0143+  0000~                        NOP                     ;                           ' 4     | 15
+0144+  0000~                        NOP                     ; wait a bit for YM         ' 4     |
+0145+  0000~            
+0146+  0000~                        INC     L               ; next port                 ' 4     |
+0147+  0000~                        LD      (HL), E         ; write value               ' 7     | 11
+0148+  0000~            
+0149+  0000                         endm
+0150+  0000             
+0151+  0000             
+0152+  0000             
+0153+  0000             ; getPlayCommand
+0154+  0000             ; --------------
+0155+  0000             ; HL  <-  point to COMMAND
+0156+  0000             ; zf  <-  channel 'ch' play command
+0157+  0000             ;
+0158+  0000             ; Z flag reset if play command for channel 'ch'
+0159+  0000             ; = 22 cycles
+0160+  0000             
+0161+  0000                         macro   getPlayCommand ch
+0162+  0000~            
+0163+  0000~                        LD      HL, COMMAND             ;                   ' 10
+0164+  0000~                        BIT     COMPLAY_SFT+ch, (HL)    ; play command ?    ' 12
+0165+  0000~            
+0166+  0000                         endm                            ;                   ' 22
+0167+  0000             
+0168+  0000             
+0169+  0000             ; getStopCommand
+0170+  0000             ; --------------
+0171+  0000             ; HL  <-  point to COMMAND
+0172+  0000             ; zf  <-  channel 'ch' stop command
+0173+  0000             ;
+0174+  0000             ; Z flag reset if stop command for channel 'ch'
+0175+  0000             ; = 22 cycles
+0176+  0000             
+0177+  0000                         macro   getStopCommand ch
+0178+  0000~            
+0179+  0000~                        LD      HL, COMMAND             ;                   ' 10
+0180+  0000~                        BIT     COMSTOP_SFT+ch, (HL)    ; stop command ?    ' 12
+0181+  0000~            
+0182+  0000                         endm                            ;                   ' 22
+0183+  0000             
+0184+  0000             
+0185+  0000             ; setPlayCommand
+0186+  0000             ; ----------------
+0187+  0000             ; HL  <-  point to COMMAND
+0188+  0000             ;
+0189+  0000             ; set the play command for channel 'ch'
+0190+  0000             ; = 25 cycles
+0191+  0000             
+0192+  0000                         macro   setPlayCommand ch
+0193+  0000~            
+0194+  0000~                        LD      HL, COMMAND             ;                   ' 10
+0195+  0000~                        SET     COMPLAY_SFT+ch, (HL)    ; set command       ' 15
+0196+  0000~            
+0197+  0000                         endm                            ;                   ' 25
+0198+  0000             
+0199+  0000             
+0200+  0000             ; setStopCommand
+0201+  0000             ; ----------------
+0202+  0000             ; HL  <-  point to COMMAND
+0203+  0000             ;
+0204+  0000             ; set the stop command for channel 'ch'
+0205+  0000             ; = 25 cycles
+0206+  0000             
+0207+  0000                         macro   setStopCommand ch
+0208+  0000~            
+0209+  0000~                        LD      HL, COMMAND             ;                   ' 10
+0210+  0000~                        SET     COMSTOP_SFT+ch, (HL)    ; set command       ' 15
+0211+  0000~            
+0212+  0000                         endm                            ;                   ' 25
+0213+  0000             
+0214+  0000             
+0215+  0000             ; clearPlayCommand
+0216+  0000             ; ----------------
+0217+  0000             ; HL  <-  point to COMMAND
+0218+  0000             ;
+0219+  0000             ; clear the play command for channel 'ch'
+0220+  0000             ; = 25 cycles
+0221+  0000             
+0222+  0000                         macro   clearPlayCommand ch
+0223+  0000~            
+0224+  0000~                        LD      HL, COMMAND             ;                   ' 10
+0225+  0000~                        RES     COMPLAY_SFT+ch, (HL)    ; clear command     ' 15
+0226+  0000~            
+0227+  0000                         endm                            ;                   ' 25
+0228+  0000             
+0229+  0000             
+0230+  0000             ; clearStopCommand
+0231+  0000             ; ----------------
+0232+  0000             ; HL  <-  point to COMMAND
+0233+  0000             ;
+0234+  0000             ; clear the stop command for channel 'ch'
+0235+  0000             ; = 25 cycles
+0236+  0000             
+0237+  0000                         macro   clearStopCommand ch
+0238+  0000~            
+0239+  0000~                        LD      HL, COMMAND             ;                   ' 10
+0240+  0000~                        RES     COMSTOP_SFT+ch, (HL)    ; clear command     ' 15
+0241+  0000~            
+0242+  0000                         endm                            ;                   ' 25
+0243+  0000             
+0244+  0000             
+0245+  0000             ; getPlayStatus
+0246+  0000             ; -------------
+0247+  0000             ; HL  <- point to STATUS
+0248+  0000             ; zf  <-  channel 'ch' is playing
+0249+  0000             ;
+0250+  0000             ; Z flag reset if play status for channel 'ch'
+0251+  0000             ; = 22 cycles
+0252+  0000             
+0253+  0000                         macro   getPlayStatus ch
+0254+  0000~            
+0255+  0000~                        LD      HL, STATUS              ;                   ' 10
+0256+  0000~                        BIT     STATPLAY_SFT+ch, (HL)   ; get status        ' 12
+0257+  0000~            
+0258+  0000                         endm                            ;                   ' 22
+0259+  0000             
+0260+  0000             
+0261+  0000             ; setPlayStatus
+0262+  0000             ; -------------
+0263+  0000             ; HL  <- point to STATUS
+0264+  0000             ;
+0265+  0000             ; set the play status for channel 'ch'
+0266+  0000             ; = 25 cycles
+0267+  0000             
+0268+  0000                         macro   setPlayStatus ch
+0269+  0000~            
+0270+  0000~                        LD      HL, STATUS              ;                   ' 10
+0271+  0000~                        SET     STATPLAY_SFT+ch, (HL)   ; set status        ' 15
+0272+  0000~            
+0273+  0000                         endm                            ;                   ' 25
+0274+  0000             
+0275+  0000             
+0276+  0000             ; clearPlayStatus
+0277+  0000             ; ---------------
+0278+  0000             ; HL  <- point to STATUS
+0279+  0000             ;
+0280+  0000             ; clear play status for channel 'ch'
+0281+  0000             ; = 25 cycles
+0282+  0000             
+0283+  0000                         macro   clearPlayStatus ch
+0284+  0000~            
+0285+  0000~                        LD      HL, STATUS              ;                   ' 10
+0286+  0000~                        RES     STATPLAY_SFT+ch, (HL)   ; clear status      ' 15
+0287+  0000~            
+0288+  0000                         endm                            ;                   ' 25
+0289+  0000             
+0290+  0000             
+0291+  0000             ; getLoopStatus
+0292+  0000             ; -------------
+0293+  0000             ; HL  <- point to STATUS+1
+0294+  0000             ; zf  <-  channel 'ch' is playing
+0295+  0000             ;
+0296+  0000             ; Z flag reset if loop status for channel 'ch'
+0297+  0000             ; = 22 cycles
+0298+  0000             
+0299+  0000                         macro   getLoopStatus ch
+0300+  0000~            
+0301+  0000~                        LD      HL, STATUS+1            ;                   ' 10
+0302+  0000~                        BIT     STATPLAY_SFT+ch, (HL)   ; get status        ' 12
+0303+  0000~            
+0304+  0000                         endm                            ;                   ' 22
+0305+  0000             
+0306+  0000             
+0307+  0000             ; setLoopStatus
+0308+  0000             ; -------------
+0309+  0000             ; HL  <- point to STATUS+1
+0310+  0000             ;
+0311+  0000             ; set the loop status for channel 'ch'
+0312+  0000             ; = 25 cycles
+0313+  0000             
+0314+  0000                         macro   setLoopStatus ch
+0315+  0000~            
+0316+  0000~                        LD      HL, STATUS+1            ;                   ' 10
+0317+  0000~                        SET     STATPLAY_SFT+ch, (HL)   ; set status        ' 15
+0318+  0000~            
+0319+  0000                         endm                            ;                   ' 25
+0320+  0000             
+0321+  0000             
+0322+  0000             ; clearLoopStatus
+0323+  0000             ; ---------------
+0324+  0000             ; HL  <- point to STATUS+1
+0325+  0000             ;
+0326+  0000             ; clear loop status for channel 'ch'
+0327+  0000             ; = 25 cycles
+0328+  0000             
+0329+  0000                         macro   clearLoopStatus ch
+0330+  0000~            
+0331+  0000~                        LD      HL, STATUS+1            ;                   ' 10
+0332+  0000~                        RES     STATPLAY_SFT+ch, (HL)   ; clear status      ' 15
+0333+  0000~            
+0334+  0000                         endm                            ;                   ' 25
+0335+  0000             
+0336+  0000             
+0337+  0000             ; clearAllStatus
+0338+  0000             ; --------------
+0339+  0000             ; HL  <- 0
+0340+  0000             ;
+0341+  0000             ; clear play and loop status for all channel
+0342+  0000             ; = 26 cycles
+0343+  0000             
+0344+  0000                         macro   clearAllStatus
+0345+  0000~            
+0346+  0000~                        LD      HL, $00                 ;                   ' 10
+0347+  0000~                        LD      (STATUS), HL            ; clear status      ' 16
+0348+  0000~            
+0349+  0000                         endm                            ;                   ' 26
+0350+  0000             
+0351+  0000             
+0352+  0000             ; ############################  macro wait macro  ##############################
+0353+  0000             
+0354+  0000             
+0355+  0000             ; wait2p16x
+0356+  0000             ; ---------
+0357+  0000             ; wait for ((w * 16) + 2) cycles
+0358+  0000             ;
+0359+  0000                         macro   wait2p16x w
+0360+  0000~            
+0361+  0000~                        LD      A, w            ; 7-2
+0362+  0000~            .loop
+0363+  0000~                        DEC     A               ; 4
+0364+  0000~                        JR      NZ, .loop       ; 12
+0365+  0000~            
+0366+  0000                         endm
+0367+  0000             
+0368+  0000             
+0369+  0000                         macro   wait4
+0370+  0000~                        NOP
+0371+  0000                         endm
+0372+  0000             
+0373+  0000                         macro   wait6
+0374+  0000~                        INC     DE
+0375+  0000                         endm
+0376+  0000             
+0377+  0000                         macro   wait7
+0378+  0000~                        LD      A, $0
+0379+  0000                         endm
+0380+  0000             
+0381+  0000                         macro   wait8
+0382+  0000~                        wait4
+0383+  0000~                        wait4
+0384+  0000                         endm
+0385+  0000             
+0386+  0000                         macro   wait9
+0387+  0000~                        LD      R, A
+0388+  0000                         endm
+0389+  0000             
+0390+  0000                         macro   wait10
+0391+  0000~                        JP      .loop
+0392+  0000~            .loop
+0393+  0000                         endm
+0394+  0000             
+0395+  0000                         macro   wait11
+0396+  0000~                        wait7
+0397+  0000~                        wait4
+0398+  0000                         endm
+0399+  0000             
+0400+  0000                         macro   wait12
+0401+  0000~                        JR      .loop
+0402+  0000~            .loop
+0403+  0000                         endm
+0404+  0000             
+0405+  0000                         macro   wait13
+0406+  0000~                        wait9
+0407+  0000~                        wait4
+0408+  0000                         endm
+0409+  0000             
+0410+  0000                         macro   wait14
+0411+  0000~                        wait7
+0412+  0000~                        wait7
+0413+  0000                         endm
+0414+  0000             
+0415+  0000                         macro   wait15
+0416+  0000~                        wait8
+0417+  0000~                        wait7
+0418+  0000                         endm
+0419+  0000             
+0420+  0000                         macro   wait16
+0421+  0000~                        wait12
+0422+  0000~                        wait4
+0423+  0000                         endm
+0424+  0000             
+0425+  0000                         macro   wait17
+0426+  0000~                        wait10
+0427+  0000~                        wait7
+0428+  0000                         endm
+0429+  0000             
+0430+  0000                         macro   wait18
+0431+  0000~                        wait9
+0432+  0000~                        wait9
+0433+  0000                         endm
+0434+  0000             
+0435+  0000                         macro   wait19
+0436+  0000~                        wait12
+0437+  0000~                        wait7
+0438+  0000                         endm
+0439+  0000             
+0440+  0000                         macro   wait20
+0441+  0000~                        wait11
+0442+  0000~                        wait9
+0443+  0000                         endm
+0444+  0000             
+0445+  0000                         macro   wait21
+0446+  0000~                        wait12
+0447+  0000~                        wait9
+0448+  0000                         endm
+0449+  0000             
+0450+  0000                         macro   wait22
+0451+  0000~                        wait18
+0452+  0000~                        wait4
+0453+  0000                         endm
+0454+  0000             
+0455+  0000                         macro   wait23
+0456+  0000~                        wait14
+0457+  0000~                        wait9
+0458+  0000                         endm
+0459+  0000             
+0460+  0000                         macro   wait24
+0461+  0000~                        wait12
+0462+  0000~                        wait12
+0463+  0000                         endm
+0464+  0000             
+0465+  0000                         macro   wait25
+0466+  0000~                        wait18
+0467+  0000~                        wait7
+0468+  0000                         endm
+0469+  0000             
+0470+  0000                         macro   wait26
+0471+  0000~                        wait18
+0472+  0000~                        wait8
+0473+  0000                         endm
+0474+  0000             
+0475+  0000                         macro   wait27
+0476+  0000~                        wait18
+0477+  0000~                        wait9
+0478+  0000                         endm
+0479+  0000             
+0480+  0000                         macro   wait28
+0481+  0000~                        wait21
+0482+  0000~                        wait7
+0483+  0000                         endm
+0484+  0000             
+0485+  0000                         macro   wait29
+0486+  0000~                        wait21
+0487+  0000~                        wait8
+0488+  0000                         endm
+0489+  0000             
+0490+  0000                         macro   wait30
+0491+  0000~                        wait21
+0492+  0000~                        wait9
+0493+  0000                         endm
+0494+  0000             
+0495+  0000                         macro   wait31
+0496+  0000~                        wait21
+0497+  0000~                        wait10
+0498+  0000                         endm
+0499+  0000             
+0500+  0000                         macro   wait32
+0501+  0000~                        wait20
+0502+  0000~                        wait12
+0503+  0000                         endm
+0504+  0000             
+0505+  0000                         macro   wait33
+0506+  0000~                        wait21
+0507+  0000~                        wait12
+0508+  0000                         endm
+0509+  0000             
+0510+  0000                         macro   wait34
+0511+  0000~                        wait2p16x 2
+0512+  0000                         endm
+0513+  0000             
+0514+  0000                         macro   wait35
+0515+  0000~                        wait28
+0516+  0000~                        wait7
+0517+  0000                         endm
+0518+  0000             
+0519+  0000                         macro   wait36
+0520+  0000~                        wait27
+0521+  0000~                        wait9
+0522+  0000                         endm
+0523+  0000             
+0524+  0000                         macro   wait37
+0525+  0000~                        wait28
+0526+  0000~                        wait9
+0527+  0000                         endm
+0528+  0000             
+0529+  0000                         macro   wait38
+0530+  0000~                        wait27
+0531+  0000~                        wait11
+0532+  0000                         endm
+0533+  0000             
+0534+  0000                         macro   wait39
+0535+  0000~                        wait27
+0536+  0000~                        wait12
+0537+  0000                         endm
+0538+  0000             
+0539+  0000                         macro   wait40
+0540+  0000~                        wait27
+0541+  0000~                        wait13
+0542+  0000                         endm
+0543+  0000             
+0544+  0000                         macro   wait41
+0545+  0000~                        wait34
+0546+  0000~                        wait7
+0547+  0000                         endm
+0548+  0000             
+0549+  0000                         macro   wait42
+0550+  0000~                        wait34
+0551+  0000~                        wait8
+0552+  0000                         endm
+0553+  0000             
+0554+  0000                         macro   wait43
+0555+  0000~                        wait36
+0556+  0000~                        wait7
+0557+  0000                         endm
+0558+  0000             
+0559+  0000                         macro   wait44
+0560+  0000~                        wait34
+0561+  0000~                        wait10
+0562+  0000                         endm
+0563+  0000             
+0564+  0000                         macro   wait45
+0565+  0000~                        wait36
+0566+  0000~                        wait9
+0567+  0000                         endm
+0568+  0000             
+0569+  0000                         macro   wait46
+0570+  0000~                        wait34
+0571+  0000~                        wait12
+0572+  0000                         endm
+0573+  0000             
+0574+  0000                         macro   wait47
+0575+  0000~                        wait34
+0576+  0000~                        wait13
+0577+  0000                         endm
+0578+  0000             
+0579+  0000                         macro   wait48
+0580+  0000~                        wait36
+0581+  0000~                        wait12
+0582+  0000                         endm
+0583+  0000             
+0584+  0000                         macro   wait49
+0585+  0000~                        wait36
+0586+  0000~                        wait13
+0587+  0000                         endm
+0588+  0000             
+0589+  0000                         macro   wait50
+0590+  0000~                        wait2p16x 3
+0591+  0000                         endm
+0592+  0000             
+0593+  0000                         macro   wait51
+0594+  0000~                        wait34
+0595+  0000~                        wait17
+0596+  0000                         endm
+0597+  0000             
+0598+  0000                         macro   wait52
+0599+  0000~                        wait34
+0600+  0000~                        wait18
+0601+  0000                         endm
+0602+  0000             
+0603+  0000                         macro   wait53
+0604+  0000~                        wait36
+0605+  0000~                        wait17
+0606+  0000                         endm
+0607+  0000             
+0608+  0000                         macro   wait54
+0609+  0000~                        wait50
+0610+  0000~                        wait4
+0611+  0000                         endm
+0612+  0000             
+0613+  0000                         macro   wait55
+0614+  0000~                        wait34
+0615+  0000~                        wait21
+0616+  0000                         endm
+0617+  0000             
+0618+  0000                         macro   wait56
+0619+  0000~                        wait34
+0620+  0000~                        wait22
+0621+  0000                         endm
+0622+  0000             
+0623+  0000                         macro   wait57
+0624+  0000~                        wait50
+0625+  0000~                        wait7
+0626+  0000                         endm
+0627+  0000             
+0628+  0000                         macro   wait58
+0629+  0000~                        wait50
+0630+  0000~                        wait8
+0631+  0000                         endm
+0632+  0000             
+0633+  0000                         macro   wait59
+0634+  0000~                        wait50
+0635+  0000~                        wait9
+0636+  0000                         endm
+0637+  0000             
+0638+  0000                         macro   wait60
+0639+  0000~                        wait50
+0640+  0000~                        wait10
+0641+  0000                         endm
+0642+  0000             
+0643+  0000                         macro   wait61
+0644+  0000~                        wait50
+0645+  0000~                        wait11
+0646+  0000                         endm
+0647+  0000             
+0648+  0000                         macro   wait62
+0649+  0000~                        wait50
+0650+  0000~                        wait12
+0651+  0000                         endm
+0652+  0000             
+0653+  0000                         macro   wait63
+0654+  0000~                        wait50
+0655+  0000~                        wait13
+0656+  0000                         endm
+0657+  0000             
+0658+  0000                         macro   wait64
+0659+  0000~                        wait50
+0660+  0000~                        wait14
+0661+  0000                         endm
+0662+  0000             
+0663+  0000                         macro   wait65
+0664+  0000~                        wait50
+0665+  0000~                        wait15
+0666+  0000                         endm
+0667+  0000             
+0668+  0000                         macro   wait66
+0669+  0000~                        wait2p16x 4
+0670+  0000                         endm
+0671+  0000             
+0672+  0000                         macro   wait67
+0673+  0000~                        wait50
+0674+  0000~                        wait17
+0675+  0000                         endm
+0676+  0000             
+0677+  0000                         macro   wait68
+0678+  0000~                        wait50
+0679+  0000~                        wait18
+0680+  0000                         endm
+0681+  0000             
+0682+  0000                         macro   wait70
+0683+  0000~                        wait66
+0684+  0000~                        wait4
+0685+  0000                         endm
+0686+  0000             
+0687+  0000                         macro   wait71
+0688+  0000~                        wait50
+0689+  0000~                        wait21
+0690+  0000                         endm
+0691+  0000             
+0692+  0000                         macro   wait72
+0693+  0000~                        wait50
+0694+  0000~                        wait22
+0695+  0000                         endm
+0696+  0000             
+0697+  0000                         macro   wait73
+0698+  0000~                        wait66
+0699+  0000~                        wait7
+0700+  0000                         endm
+0701+  0000             
+0702+  0000                         macro   wait74
+0703+  0000~                        wait66
+0704+  0000~                        wait8
+0705+  0000                         endm
+0706+  0000             
+0707+  0000                         macro   wait75
+0708+  0000~                        wait66
+0709+  0000~                        wait9
+0710+  0000                         endm
+0711+  0000             
+0712+  0000                         macro   wait76
+0713+  0000~                        wait66
+0714+  0000~                        wait10
+0715+  0000                         endm
+0716+  0000             
+0717+  0000                         macro   wait77
+0718+  0000~                        wait66
+0719+  0000~                        wait11
+0720+  0000                         endm
+0721+  0000             
+0722+  0000                         macro   wait78
+0723+  0000~                        wait66
+0724+  0000~                        wait12
+0725+  0000                         endm
+0726+  0000             
+0727+  0000                         macro   wait79
+0728+  0000~                        wait66
+0729+  0000~                        wait13
+0730+  0000                         endm
+0731+  0000             
+0732+  0000                         macro   wait80
+0733+  0000~                        wait66
+0734+  0000~                        wait14
+0735+  0000                         endm
+0736+  0000             
+0737+  0000                         macro   wait81
+0738+  0000~                        wait66
+0739+  0000~                        wait15
+0740+  0000                         endm
+0741+  0000             
+0742+  0000                         macro   wait82
+0743+  0000~                        wait2p16x 5
+0744+  0000                         endm
+0745+  0000             
+0746+  0000                         macro   wait83
+0747+  0000~                        wait66
+0748+  0000~                        wait17
+0749+  0000                         endm
+0750+  0000             
+0751+  0000                         macro   wait84
+0752+  0000~                        wait66
+0753+  0000~                        wait18
+0754+  0000                         endm
+0755+  0000             
+0756+  0000                         macro   wait85
+0757+  0000~                        wait66
+0758+  0000~                        wait19
+0759+  0000                         endm
+0760+  0000             
+0761+  0000                         macro   wait86
+0762+  0000~                        wait82
+0763+  0000~                        wait4
+0764+  0000                         endm
+0765+  0000             
+0766+  0000                         macro   wait87
+0767+  0000~                        wait66
+0768+  0000~                        wait21
+0769+  0000                         endm
+0770+  0000             
+0771+  0000                         macro   wait88
+0772+  0000~                        wait66
+0773+  0000~                        wait22
+0774+  0000                         endm
+0775+  0000             
+0776+  0000                         macro   wait89
+0777+  0000~                        wait82
+0778+  0000~                        wait7
+0779+  0000                         endm
+0780+  0000             
+0781+  0000                         macro   wait90
+0782+  0000~                        wait82
+0783+  0000~                        wait8
+0784+  0000                         endm
+0785+  0000             
+0786+  0000                         macro   wait91
+0787+  0000~                        wait82
+0788+  0000~                        wait9
+0789+  0000                         endm
+0790+  0000             
+0791+  0000                         macro   wait92
+0792+  0000~                        wait82
+0793+  0000~                        wait10
+0794+  0000                         endm
+0795+  0000             
+0796+  0000                         macro   wait94
+0797+  0000~                        wait82
+0798+  0000~                        wait12
+0799+  0000                         endm
+0800+  0000             
+0801+  0000                         macro   wait95
+0802+  0000~                        wait82
+0803+  0000~                        wait13
+0804+  0000                         endm
+0805+  0000             
+0806+  0000                         macro   wait96
+0807+  0000~                        wait82
+0808+  0000~                        wait14
+0809+  0000                         endm
+0810+  0000             
+0811+  0000                         macro   wait97
+0812+  0000~                        wait82
+0813+  0000~                        wait15
+0814+  0000                         endm
+0815+  0000             
+0816+  0000                         macro   wait98
+0817+  0000~                        wait2p16x 6
+0818+  0000                         endm
+0819+  0000             
+0820+  0000                         macro   wait99
+0821+  0000~                        wait82
+0822+  0000~                        wait17
+0823+  0000                         endm
+0824+  0000             
+0825+  0000                         macro   wait100
+0826+  0000~                        wait82
+0827+  0000~                        wait18
+0828+  0000                         endm
+0829+  0000             
+0830+  0000                         macro   wait102
+0831+  0000~                        wait98
+0832+  0000~                        wait4
+0833+  0000                         endm
+0834+  0000             
+0835+  0000                         macro   wait103
+0836+  0000~                        wait82
+0837+  0000~                        wait21
+0838+  0000                         endm
+0839+  0000             
+0840+  0000                         macro   wait104
+0841+  0000~                        wait82
+0842+  0000~                        wait22
+0843+  0000                         endm
+0844+  0000             
+0845+  0000                         macro   wait105
+0846+  0000~                        wait98
+0847+  0000~                        wait7
+0848+  0000                         endm
+0849+  0000             
+0850+  0000                         macro   wait106
+0851+  0000~                        wait98
+0852+  0000~                        wait8
+0853+  0000                         endm
+0854+  0000             
+0855+  0000                         macro   wait107
+0856+  0000~                        wait98
+0857+  0000~                        wait9
+0858+  0000                         endm
+0859+  0000             
+0860+  0000                         macro   wait108
+0861+  0000~                        wait98
+0862+  0000~                        wait10
+0863+  0000                         endm
+0864+  0000             
+0865+  0000                         macro   wait109
+0866+  0000~                        wait98
+0867+  0000~                        wait11
+0868+  0000                         endm
+0869+  0000             
+0870+  0000                         macro   wait110
+0871+  0000~                        wait98
+0872+  0000~                        wait12
+0873+  0000                         endm
+0874+  0000             
+0875+  0000                         macro   wait111
+0876+  0000~                        wait98
+0877+  0000~                        wait13
+0878+  0000                         endm
+0879+  0000             
+0880+  0000                         macro   wait112
+0881+  0000~                        wait98
+0882+  0000~                        wait14
+0883+  0000                         endm
+0884+  0000             
+0885+  0000                         macro   wait114
+0886+  0000~                        wait2p16x 7
+0887+  0000                         endm
+0888+  0000             
+0889+  0000                         macro   wait115
+0890+  0000~                        wait98
+0891+  0000~                        wait17
+0892+  0000                         endm
+0893+  0000             
+0894+  0000                         macro   wait116
+0895+  0000~                        wait98
+0896+  0000~                        wait18
+0897+  0000                         endm
+0898+  0000             
+0899+  0000                         macro   wait117
+0900+  0000~                        wait98
+0901+  0000~                        wait19
+0902+  0000                         endm
+0903+  0000             
+0904+  0000                         macro   wait118
+0905+  0000~                        wait114
+0906+  0000~                        wait4
+0907+  0000                         endm
+0908+  0000             
+0909+  0000                         macro   wait119
+0910+  0000~                        wait98
+0911+  0000~                        wait21
+0912+  0000                         endm
+0913+  0000             
+0914+  0000                         macro   wait120
+0915+  0000~                        wait98
+0916+  0000~                        wait22
+0917+  0000                         endm
+0918+  0000             
+0919+  0000                         macro   wait121
+0920+  0000~                        wait114
+0921+  0000~                        wait7
+0922+  0000                         endm
+0923+  0000             
+0924+  0000                         macro   wait122
+0925+  0000~                        wait114
+0926+  0000~                        wait8
+0927+  0000                         endm
+0928+  0000             
+0929+  0000                         macro   wait123
+0930+  0000~                        wait114
+0931+  0000~                        wait9
+0932+  0000                         endm
+0933+  0000             
+0934+  0000                         macro   wait124
+0935+  0000~                        wait114
+0936+  0000~                        wait10
+0937+  0000                         endm
+0938+  0000             
+0939+  0000                         macro   wait125
+0940+  0000~                        wait114
+0941+  0000~                        wait11
+0942+  0000                         endm
+0943+  0000             
+0944+  0000                         macro   wait126
+0945+  0000~                        wait114
+0946+  0000~                        wait12
+0947+  0000                         endm
+0948+  0000             
+0949+  0000                         macro   wait127
+0950+  0000~                        wait114
+0951+  0000~                        wait13
+0952+  0000                         endm
+0953+  0000             
+0954+  0000                         macro   wait128
+0955+  0000~                        wait114
+0956+  0000~                        wait14
+0957+  0000                         endm
+0958+  0000             
+0959+  0000                         macro   wait129
+0960+  0000~                        wait114
+0961+  0000~                        wait15
+0962+  0000                         endm
+0963+  0000             
+0964+  0000                         macro   wait130
+0965+  0000~                        wait2p16x 8
+0966+  0000                         endm
+0967+  0000             
+0968+  0000                         macro   wait131
+0969+  0000~                        wait114
+0970+  0000~                        wait17
+0971+  0000                         endm
+0972+  0000             
+0973+  0000                         macro   wait132
+0974+  0000~                        wait114
+0975+  0000~                        wait18
+0976+  0000                         endm
+0977+  0000             
+0978+  0000                         macro   wait133
+0979+  0000~                        wait114
+0980+  0000~                        wait19
+0981+  0000                         endm
+0982+  0000             
+0983+  0000                         macro   wait134
+0984+  0000~                        wait130
+0985+  0000~                        wait4
+0986+  0000                         endm
+0987+  0000             
+0988+  0000                         macro   wait135
+0989+  0000~                        wait114
+0990+  0000~                        wait21
+0991+  0000                         endm
+0992+  0000             
+0993+  0000                         macro   wait136
+0994+  0000~                        wait114
+0995+  0000~                        wait22
+0996+  0000                         endm
+0997+  0000             
+0998+  0000                         macro   wait137
+0999+  0000~                        wait130
+1000+  0000~                        wait7
+1001+  0000                         endm
+1002+  0000             
+1003+  0000                         macro   wait138
+1004+  0000~                        wait130
+1005+  0000~                        wait8
+1006+  0000                         endm
+1007+  0000             
+1008+  0000                         macro   wait139
+1009+  0000~                        wait130
+1010+  0000~                        wait9
+1011+  0000                         endm
+1012+  0000             
+1013+  0000                         macro   wait140
+1014+  0000~                        wait130
+1015+  0000~                        wait10
+1016+  0000                         endm
+1017+  0000             
+1018+  0000                         macro   wait141
+1019+  0000~                        wait130
+1020+  0000~                        wait11
+1021+  0000                         endm
+1022+  0000             
+1023+  0000                         macro   wait144
+1024+  0000~                        wait130
+1025+  0000~                        wait14
+1026+  0000                         endm
+1027+  0000             
+1028+  0000                         macro   wait145
+1029+  0000~                        wait130
+1030+  0000~                        wait15
+1031+  0000                         endm
+1032+  0000             
+1033+  0000                         macro   wait146
+1034+  0000~                        wait2p16x 9
+1035+  0000                         endm
+1036+  0000             
+1037+  0000                         macro   wait147
+1038+  0000~                        wait130
+1039+  0000~                        wait17
+1040+  0000                         endm
+1041+  0000             
+1042+  0000                         macro   wait148
+1043+  0000~                        wait130
+1044+  0000~                        wait18
+1045+  0000                         endm
+1046+  0000             
+1047+  0000                         macro   wait149
+1048+  0000~                        wait130
+1049+  0000~                        wait19
+1050+  0000                         endm
+1051+  0000             
+1052+  0000                         macro   wait150
+1053+  0000~                        wait146
+1054+  0000~                        wait4
+1055+  0000                         endm
+1056+  0000             
+1057+  0000                         macro   wait154
+1058+  0000~                        wait146
+1059+  0000~                        wait8
+1060+  0000                         endm
+1061+  0000             
+1062+  0000                         macro   wait155
+1063+  0000~                        wait146
+1064+  0000~                        wait9
+1065+  0000                         endm
+1066+  0000             
+1067+  0000                         macro   wait156
+1068+  0000~                        wait146
+1069+  0000~                        wait10
+1070+  0000                         endm
+1071+  0000             
+1072+  0000                         macro   wait157
+1073+  0000~                        wait146
+1074+  0000~                        wait11
+1075+  0000                         endm
+1076+  0000             
+1077+  0000                         macro   wait158
+1078+  0000~                        wait146
+1079+  0000~                        wait12
+1080+  0000                         endm
+1081+  0000             
+1082+  0000                         macro   wait160
+1083+  0000~                        wait146
+1084+  0000~                        wait14
+1085+  0000                         endm
+1086+  0000             
+1087+  0000                         macro   wait161
+1088+  0000~                        wait146
+1089+  0000~                        wait15
+1090+  0000                         endm
+1091+  0000             
+1092+  0000                         macro   wait162
+1093+  0000~                        wait2p16x 10
+1094+  0000                         endm
+1095+  0000             
+1096+  0000                         macro   wait164
+1097+  0000~                        wait146
+1098+  0000~                        wait18
+1099+  0000                         endm
+1100+  0000             
+1101+  0000                         macro   wait165
+1102+  0000~                        wait146
+1103+  0000~                        wait19
+1104+  0000                         endm
+1105+  0000             
+1106+  0000                         macro   wait166
+1107+  0000~                        wait162
+1108+  0000~                        wait4
+1109+  0000                         endm
+1110+  0000             
+1111+  0000                         macro   wait172
+1112+  0000~                        wait162
+1113+  0000~                        wait10
+1114+  0000                         endm
+1115+  0000             
+1116+  0000                         macro   wait174
+1117+  0000~                        wait162
+1118+  0000~                        wait12
+1119+  0000                         endm
+1120+  0000             
+1121+  0000                         macro   wait175
+1122+  0000~                        wait162
+1123+  0000~                        wait13
+1124+  0000                         endm
+1125+  0000             
+1126+  0000                         macro   wait176
+1127+  0000~                        wait162
+1128+  0000~                        wait14
+1129+  0000                         endm
+1130+  0000             
+1131+  0000                         macro   wait178
+1132+  0000~                        wait2p16x 11
+1133+  0000                         endm
+1134+  0000             
+1135+  0000                         macro   wait179
+1136+  0000~                        wait162
+1137+  0000~                        wait17
+1138+  0000                         endm
+1139+  0000             
+1140+  0000                         macro   wait180
+1141+  0000~                        wait162
+1142+  0000~                        wait18
+1143+  0000                         endm
+1144+  0000             
+1145+  0000                         macro   wait182
+1146+  0000~                        wait178
+1147+  0000~                        wait4
+1148+  0000                         endm
+1149+  0000             
+1150+  0000                         macro   wait183
+1151+  0000~                        wait162
+1152+  0000~                        wait121
+1153+  0000                         endm
+1154+  0000             
+1155+  0000                         macro   wait186
+1156+  0000~                        wait178
+1157+  0000~                        wait8
+1158+  0000                         endm
+1159+  0000             
+1160+  0000                         macro   wait187
+1161+  0000~                        wait178
+1162+  0000~                        wait9
+1163+  0000                         endm
+1164+  0000             
+1165+  0000                         macro   wait189
+1166+  0000~                        wait178
+1167+  0000~                        wait11
+1168+  0000                         endm
+1169+  0000             
+1170+  0000                         macro   wait191
+1171+  0000~                        wait178
+1172+  0000~                        wait13
+1173+  0000                         endm
+1174+  0000             
+1175+  0000                         macro   wait192
+1176+  0000~                        wait178
+1177+  0000~                        wait14
+1178+  0000                         endm
+1179+  0000             
+1180+  0000                         macro   wait193
+1181+  0000~                        wait178
+1182+  0000~                        wait15
+1183+  0000                         endm
+1184+  0000             
+1185+  0000                         macro   wait194
+1186+  0000~                        wait2p16x 12
+1187+  0000                         endm
+1188+  0000             
+1189+  0000                         macro   wait197
+1190+  0000~                        wait178
+1191+  0000~                        wait19
+1192+  0000                         endm
+1193+  0000             
+1194+  0000                         macro   wait203
+1195+  0000~                        wait194
+1196+  0000~                        wait9
+1197+  0000                         endm
+1198+  0000             
+1199+  0000                         macro   wait210
+1200+  0000~                        wait2p16x 13
+1201+  0000                         endm
+1202+  0000             
+1203+  0000                         macro   wait218
+1204+  0000~                        wait210
+1205+  0000~                        wait8
+1206+  0000                         endm
+1207+  0000             
+1208+  0000                         macro   wait226
+1209+  0000~                        wait2p16x 14
+1210+  0000                         endm
+1211+  0000             
+1212+  0000                         macro   wait234
+1213+  0000~                        wait226
+1214+  0000~                        wait8
+1215+  0000                         endm
+1216+  0000             
+1217+  0000                         macro   wait242
+1218+  0000~                        wait2p16x 15
+1219+  0000                         endm
+1220+  0000             
+1221+  0000                         macro   wait244
+1222+  0000~                        wait226
+1223+  0000~                        wait18
+1224+  0000                         endm
+1225+  0000             
+1226+  0000                         macro   wait246
+1227+  0000~                        wait242
+1228+  0000~                        wait4
+1229+  0000                         endm
+1230+  0000             
+1231+  0000                         macro   wait254
+1232+  0000~                        wait242
+1233+  0000~                        wait12
+1234+  0000                         endm
+1235+  0000             
+1236+  0000                         macro   wait258
+1237+  0000~                        wait2p16x 16
+1238+  0000                         endm
+1239+  0000             
+1240+  0000                         macro   wait260
+1241+  0000~                        wait242
+1242+  0000~                        wait18
+1243+  0000                         endm
+1244+  0000             
+1245+  0000                         macro   wait262
+1246+  0000~                        wait258
+1247+  0000~                        wait4
+1248+  0000                         endm
+1249+  0000             
+1250+  0000                         macro   wait264
+1251+  0000~                        wait242
+1252+  0000~                        wait22
+1253+  0000                         endm
+1254+  0000             
+1255+  0000                         macro   wait268
+1256+  0000~                        wait258
+1257+  0000~                        wait10
+1258+  0000                         endm
+1259+  0000             
+1260+  0000                         macro   wait274
+1261+  0000~                        wait2p16x 17
+1262+  0000                         endm
+1263+  0000             
+1264+  0000                         macro   wait276
+1265+  0000~                        wait258
+1266+  0000~                        wait18
+1267+  0000                         endm
+1268+  0000             
+1269+  0000                         macro   wait278
+1270+  0000~                        wait274
+1271+  0000~                        wait4
+1272+  0000                         endm
+1273+  0000             
+1274+  0000                         macro   wait282
+1275+  0000~                        wait274
+1276+  0000~                        wait8
+1277+  0000                         endm
+1278+  0000             
+1279+  0000                         macro   wait283
+1280+  0000~                        wait274
+1281+  0000~                        wait9
+1282+  0000                         endm
+1283+  0000             
+1284+  0000                         macro   wait285
+1285+  0000~                        wait274
+1286+  0000~                        wait11
+1287+  0000                         endm
+1288+  0000             
+1289+  0000                         macro   wait287
+1290+  0000~                        wait274
+1291+  0000~                        wait13
+1292+  0000                         endm
+1293+  0000             
+1294+  0000                         macro   wait290
+1295+  0000~                        wait2p16x 18
+1296+  0000                         endm
+1297+  0000             
+1298+  0000                         macro   wait294
+1299+  0000~                        wait290
+1300+  0000~                        wait4
+1301+  0000                         endm
+1302+  0000             
+1303+  0000                         macro   wait295
+1304+  0000~                        wait274
+1305+  0000~                        wait21
+1306+  0000                         endm
+1307+  0000             
+1308+  0000                         macro   wait298
+1309+  0000~                        wait290
+1310+  0000~                        wait8
+1311+  0000                         endm
+1312+  0000             
+1313+  0000                         macro   wait305
+1314+  0000~                        wait290
+1315+  0000~                        wait15
+1316+  0000                         endm
+1317+  0000             
+1318+  0000                         macro   wait306
+1319+  0000~                        wait2p16x 19
+1320+  0000                         endm
+1321+  0000             
+1322+  0000                         macro   wait308
+1323+  0000~                        wait290
+1324+  0000~                        wait18
+1325+  0000                         endm
+1326+  0000             
+1327+  0000                         macro   wait320
+1328+  0000~                        wait306
+1329+  0000~                        wait14
+1330+  0000                         endm
+1331+  0000             
+1332+  0000                         macro   wait322
+1333+  0000~                        wait2p16x 20
+1334+  0000                         endm
+1335+  0000             
+1336+  0000                         macro   wait324
+1337+  0000~                        wait306
+1338+  0000~                        wait18
+1339+  0000                         endm
+1340+  0000             
+1341+  0000                         macro   wait329
+1342+  0000~                        wait322
+1343+  0000~                        wait7
+1344+  0000                         endm
+1345+  0000             
+1346+  0000                         macro   wait337
+1347+  0000~                        wait322
+1348+  0000~                        wait15
+1349+  0000                         endm
+1350+  0000             
+1351+  0000                         macro   wait338
+1352+  0000~                        wait2p16x 21
+1353+  0000                         endm
+1354+  0000             
+1355+  0000                         macro   wait345
+1356+  0000~                        wait338
+1357+  0000~                        wait7
+1358+  0000                         endm
+1359+  0000             
+1360+  0000                         macro   wait434
+1361+  0000~                        wait2p16x 27
+1362+  0000                         endm
+1363+  0000             
+1364+  0000                         macro   wait450
+1365+  0000~                        wait2p16x 28
+1366+  0000                         endm
+1367+  0000             
+1368+  0000                         macro   wait454
+1369+  0000~                        wait450
+1370+  0000~                        wait4
+1371+  0000                         endm
+1372+  0000             
+1373+  0000                         macro   wait455
+1374+  0000~                        wait434
+1375+  0000~                        wait21
+1376+  0000                         endm
+1377+  0000             
+1378+  0000                         macro   wait546
+1379+  0000~                        wait2p16x 34
+1380+  0000                         endm
+1381+  0000             
+1382+  0000                         macro   wait562
+1383+  0000~                        wait2p16x 35
+1384+  0000                         endm
+1385+  0000             
+1386+  0000                         macro   wait567
+1387+  0000~                        wait546
+1388+  0000~                        wait21
+1389+  0000                         endm
+1390+  0000             
+1391+  0000                         macro   wait578
+1392+  0000~                        wait2p16x 36
+1393+  0000                         endm
+1394+  0000             
+1395+  0000                         macro   wait586
+1396+  0000~                        wait578
+1397+  0000~                        wait8
+1398+  0000                         endm
+1399+  0000             
+1400+  0000                         macro   wait590
+1401+  0000~                        wait578
+1402+  0000~                        wait12
+1403+  0000                         endm
+1404+  0000             
+1405+  0000                         macro   wait594
+1406+  0000~                        wait2p16x 37
+1407+  0000                         endm
+1408+  0000             
+1409+  0000                         macro   wait595
+1410+  0000~                        wait578
+1411+  0000~                        wait17
+1412+  0000                         endm
+1413+  0000             
+1414+  0000                         macro   wait598
+1415+  0000~                        wait594
+1416+  0000~                        wait4
+1417+  0000                         endm
+1418+  0000             
+1419+  0000                         macro   wait599
+1420+  0000~                        wait578
+1421+  0000~                        wait21
+1422+  0000                         endm
+1423+  0000             
+1424+  0000                         macro   wait602
+1425+  0000~                        wait594
+1426+  0000~                        wait8
+1427+  0000                         endm
+1428+  0000             
+1429+  0000                         macro   wait609
+1430+  0000~                        wait594
+1431+  0000~                        wait15
+1432+  0000                         endm
+1433+  0000             
+1434+  0000                         macro   wait610
+1435+  0000~                        wait2p16x 38
+1436+  0000                         endm
+1437+  0000             
+1438+  0000                         macro   wait614
+1439+  0000~                        wait610
+1440+  0000~                        wait4
+1441+  0000                         endm
+1442+  0000             
+1443+  0000                         macro   wait618
+1444+  0000~                        wait610
+1445+  0000~                        wait8
+1446+  0000                         endm
+1447+  0000             
+1448+  0000                         macro   wait619
+1449+  0000~                        wait610
+1450+  0000~                        wait9
+1451+  0000                         endm
+1452+  0000             
+1453+  0000                         macro   wait622
+1454+  0000~                        wait610
+1455+  0000~                        wait12
+1456+  0000                         endm
+1457+  0000             
+1458+  0000                         macro   wait623
+1459+  0000~                        wait610
+1460+  0000~                        wait13
+1461+  0000                         endm
+1462+  0000             
+1463+  0000                         macro   wait626
+1464+  0000~                        wait2p16x 39
+1465+  0000                         endm
+1466+  0000             
+1467+  0000                         macro   wait634
+1468+  0000~                        wait626
+1469+  0000~                        wait8
+1470+  0000                         endm
+1471+  0000             
+1472+  0000                         macro   wait638
+1473+  0000~                        wait626
+1474+  0000~                        wait12
+1475+  0000                         endm
+0046   0000             
+0047   0000             
+0048   0000             ; copyChannelParams
+0049   0000             ; -----------------
+0050   0000             ; copy channel parameters to internal structure
+0051   0000             ; = 64 cycles
+0052   0000             
+0053   0000                         macro copyChannelParams
+0054   0000~            
+0055   0000~                        LD      HL, (WAVADR)            ;                   ' 16
+0056   0000~                        LD      (IWAVADR), HL           ;                   ' 16
+0057   0000~                        LD      HL, (WAVLEN)            ;                   ' 16
+0058   0000~                        LD      (IWAVLEN), HL           ;                   ' 16
+0059   0000~            
+0060   0000                         endm                            ;                   ' 64
+0061   0000             
+0062   0000             
+0063   0000             ; stopChannel
+0064   0000             ; -----------
+0065   0000             ; set null sample play
+0066   0000             ; = 90 cycles
+0067   0000             
+0068   0000                         macro stopChannel
+0069   0000~            
+0070   0000~                        LD      HL, (NULLWAVADR)    ;                       ' 16
+0071   0000~                        LD      (IWAVADR), HL       ;                       ' 16
+0072   0000~                        LD      HL, (NULLWAVLEN)    ;                       ' 16
+0073   0000~                        LD      (IWAVLEN), HL       ;                       ' 16
+0074   0000~                        clearAllStatus              ; clear play/loop stat  ' 26
+0075   0000~            
+0076   0000~            ;            initSample                 ; init sample value     ' 17
+0077   0000~            
+0078   0000                         endm                        ;                       ' 90
+0079   0000             
+0080   0000             
+0081   0000             ; initSample
+0082   0000             ; ----------
+0083   0000             ; A'  <- 0
+0084   0000             ;
+0085   0000             ; init sample
+0086   0000             ; = 12 cycles
+0087   0000             
+0088   0000                         macro initSample
+0089   0000~            
+0090   0000~                        EX      AF, AF'                 ;                   ' 4
+0091   0000~                        XOR     A                       ;                   ' 4
+0092   0000~                        EX      AF, AF'                 ;                   ' 4
+0093   0000~            
+0094   0000                         endm                            ;                   ' 12
+0095   0000             
+0096   0000             
+0097   0000             ; handlePlayCommand
+0098   0000             ; -----------------
+0099   0000             ; HL  <-  ?
+0100   0000             ;
+0101   0000             ; handle play command
+0102   0000             ; = 158 cycles
+0103   0000             
+0104   0000                         macro handlePlayCommand
+0105   0000~            
+0106   0000~                        getPlayCommand 0            ; play command ?        ' 22    | 32 (32)
+0107   0000~                        JP      NZ, .play           ;                       ' 10    |
+0108   0000~            
+0109   0000~                        wait121                     ; synchro               ' 116   | 126 (158)
+0110   0000~                        JP      .end                ;                       ' 10    |
+0111   0000~            
+0112   0000~            .play
+0113   0000~                        clearPlayCommand 0          ; clear play command    ' 25    |
+0114   0000~                        copyChannelParams           ; copy params           ' 64    | 126 (158)
+0115   0000~                        initSample                  ; init sample value     ' 12    |
+0116   0000~                        setPlayStatus 0             ; set play status       ' 25    |
+0117   0000~            
+0118   0000~            .end
+0119   0000                         endm                        ;                       ' 158
+0120   0000             
+0121   0000             
+0122   0000             ; prepareChannel
+0123   0000             ; --------------
+0124   0000             ; BC  <-  point to the sample source
+0125   0000             ; HL  <-  ?
+0126   0000             ; A   <-  ?
+0127   0000             ;
+0128   0000             ; set bank and prepare registers to play
+0129   0000             ; = 160 cycles
+0130   0000             
+0131   0000                         macro prepareChannel
+0132   0000~            
+0133   0000~                        LD      HL, IWAVADR         ; point to sample adr   ' 10    |
+0134   0000~                        LD      B, (HL)             ; B = bit 7-14          ' 7     |
+0135   0000~                        INC     L                   ;                       ' 4     | 129 (129)
+0136   0000~                        LD      A, (HL)             ; A = bit 15-22         ' 7     |
+0137   0000~                        setBank                     ; set bank              ' 101   |
+0138   0000~            
+0139   0000~                        LD      A, B                ; A = bit 7-14          ' 4     |
+0140   0000~                        SCF                         ;                       ' 4     |
+0141   0000~                        RRA                         ; A = $80 | bit 8-14    ' 4     |
+0142   0000~                        LD      B, A                ; B = high byte src     ' 4     | 31 (160)
+0143   0000~                        RRA                         ; A = bit 7 + ???       ' 4     |
+0144   0000~                        AND     $80                 ; A = bit 7 only        ' 7     |
+0145   0000~                        LD      C, A                ; BC = src adr          ' 4     |
+0146   0000~            
+0147   0000                         endm                                                ' 160
+0148   0000             
+0149   0000             
+0150   0000             ; updateChannelData
+0151   0000             ; -----------------
+0152   0000             ; HL  <-  ?
+0153   0000             ;
+0154   0000             ; update sample address and sample lenght
+0155   0000             ; = 76 cycles
+0156   0000             
+0157   0000                         macro updateChannelData
+0158   0000~            
+0159   0000~                        LD      HL, (IWAVADR)           ; increment address ' 16    |
+0160   0000~                        INC     HL                      ;                   ' 6     | 38
+0161   0000~                        LD      (IWAVADR), HL           ;                   ' 16    |
+0162   0000~            
+0163   0000~                        LD      HL, (IWAVLEN)           ; decrement lenght  ' 16    |
+0164   0000~                        DEC     HL                      ;                   ' 6     | 38 (76)
+0165   0000~                        LD      (IWAVLEN), HL           ;                   ' 16    |
+0166   0000~            
+0167   0000                         endm
+0168   0000             
+0169   0000             ; checkChannelEnd
+0170   0000             ; ---------------
+0171   0000             ; HL  <-  ?
+0172   0000             ; A   <-  ?
+0173   0000             ;
+0174   0000             ; check is sample is done, restart it if needed
+0175   0000             ; = 164 cycles
+0176   0000             
+0177   0000                         macro checkChannelEnd
+0178   0000~            
+0179   0000~                        LD      HL, (IWAVLEN)       ; get sample lenght     ' 16    |
+0180   0000~                        LD      A, H                ;                       ' 4     | 34 (34)
+0181   0000~                        OR      L                   ;                       ' 4     |
+0182   0000~                        JP      Z, .done            ; sample done ?         ' 10    |
+0183   0000~            
+0184   0000~                        wait121                     ;                       ' 120   | 130 (164)
+0185   0000~                        JP      .end                ;                       ' 10    |
+0186   0000~            
+0187   0000~            .done
+0188   0000~                        getLoopStatus 0             ; loop play ?           ' 22    | 32 (66)
+0189   0000~                        JP      Z, .stop            ;                       ' 10    |
+0190   0000~            
+0191   0000~            .restart
+0192   0000~                        copyChannelParams           ; copy params           ' 64    |
+0193   0000~                        initSample                  ; init sample value     ' 17    | 98 (164)
+0194   0000~                        wait7                       ;                       ' 7     |
+0195   0000~                        JP      .end                ;                       ' 10    |
+0196   0000~            
+0197   0000~            .stop
+0198   0000~                        stopChannel                 ;                       ' 90    | 98 (164)
+0199   0000~                        wait8                       ;                       ' 8     |
+0200   0000~            
+0201   0000~            .end
+0202   0000                         endm                        ;                       ' 164
+0203   0000             
+0204   0000             
+0205   0000             ; nextWriteBuffer
+0206   0000             ; ---------------
+0207   0000             ; DE  <-  point to new write buffer
+0208   0000             ;
+0209   0000             ; pass to next write buffer
+0210   0000             ; = 19 cycles
+0211   0000             
+0212   0000                         macro nextWriteBuffer
+0213   0000~            
+0214   0000~                        LD      A, D            ; next write buffer         ' 4
+0215   0000~                        INC     A               ;                           ' 4
+0216   0000~                        AND     $1B             ;                           ' 7
+0217   0000~                        LD      D, A            ;                           ' 4
+0218   0000~            
+0219   0000                         endm                    ;                           ' 19
+0220   0000             
+0221   0000             
+0222   0000             ; sampleOutput
+0223   0000             ; ------------
+0224   0000             ; HL'  -> YMPORT1
+0225   0000             ; BC' <-> point to sample buffer (read buffer)
+0226   0000             ; L'   -> $80
+0227   0000             ;
+0228   0000             ; output a sample to the DAC and check read buffer overflow
+0229   0000             ; = 67 cycles
+0230   0000             
+0231   0000                         macro sampleOutput
+0232   0000~            
+0233   0000~                        EXX                     ;                           ' 4     | 4 (4)
+0234   0000~            
+0235   0000~                        LD      A, (BC)         ; read sample from buffer   ' 7     |
+0236   0000~                        ADD     L               ; unsign                    ' 4     |
+0237   0000~                        INC     C               ; increment read address    ' 4     | 32 (36)
+0238   0000~                        LD      (DE), A         ; play sample               ' 7     |
+0239   0000~                        JP      Z, .end_read    ; end read ?                ' 10    |
+0240   0000~            
+0241   0000~                        wait17                  ; synchro                   ' 17    | 27 (63)
+0242   0000~                        JP     .end             ;                           ' 10    |
+0243   0000~            
+0244   0000~            .end_read
+0245   0000~                        LD      A, B            ; next read buffer          ' 4     |
+0246   0000~                        INC     A               ;                           ' 4     |
+0247   0000~                        AND     $1B             ;                           ' 7     | 27 (63)
+0248   0000~                        LD      B, A            ;                           ' 4     |
+0249   0000~                        INC     IXH             ; mark overflow             ' 8     |
+0250   0000~            
+0251   0000~            .end
+0252   0000~            
+0253   0000~                        EXX                     ;                           ' 4     | 4 (67)
+0254   0000~            
+0255   0000                         endm                    ;                           ' 67
+0256   0000             
+0257   0000             
+0258   0000             ; unpack2
+0259   0000             ; ------------------
+0260   0000             ; BC  <-> point to the sample source (ROM)
+0261   0000             ; DE  <-> point to the write output buffer
+0262   0000             ; L   <-  ?
+0263   0000             ; A   <-  ?
+0264   0000             ; A'  <-> current sample level
+0265   0000             ; H   <-> DELTATAB >> 1
+0266   0000             ;
+0267   0000             ; unpack 2 adpcm samples and write them in output buffer
+0268   0000             ; = 83 cycles
+0269   0000             
+0270   0000                         macro unpack2
+0271   0000~            
+0272   0000~                        LD      A, (BC)         ; read 2 ADPCM samples      ' 7+2   |
+0273   0000~                        INC     C               ; next                      ' 4     | 35 (35)
+0274   0000~                        LD      H, $06          ; H = DELTATAB >> 9         ' 7     |
+0275   0000~                        LD      L, A            ;                           ' 4     |
+0276   0000~                        ADD     HL, HL          ; HL point to delta val     ' 11    |
+0277   0000~            
+0278   0000~                        EX      AF, AF'         ; A = current level         ' 4     | 4 (39)
+0279   0000~            
+0280   0000~                        ADD     (HL)            ; decode                    ' 7     |
+0281   0000~                        INC     L               ; next delta                ' 4     |
+0282   0000~                        LD      (DE), A         ; write sample in buffer    ' 7     |
+0283   0000~                        INC     E               ;                           ' 4     |
+0284   0000~                        ADD     (HL)            ; decode                    ' 7     | 40 (79)
+0285   0000~                        LD      (DE), A         ; write sample in buffer    ' 7     |
+0286   0000~                        INC     E               ;                           ' 4     |
+0287   0000~            
+0288   0000~                        EX      AF, AF'         ; A' = current level        ' 4     | 4 (83)
+0289   0000~            
+0290   0000                         endm                    ;                           ' 83
+0291   0000             
+0292   0000             
+0293   0000             ; ###########################       init       ##############################
+0294   0000             
+0295   0000                         ORG     $0000
+0296   0000             
+0297   0000             init
+0298   0000 F3                      DI                      ; disable ints
+0299   0001 31 00 20                LD      SP, $2000       ; setup stack
+0300   0004 ED 56                   IM      $01             ; set int mode 1
+0301   0006 AF                      XOR     A
+0302   0007 32 02 01                LD      (STATUS), A     ; driver not ready
+0303   000A 32 00 01                LD      (COMMAND), A    ; command cleared
+0304   000D C3 00 02                JP      start           ; jump to start
+0305   0010             
+0306   0010             
+0307   0010             ; ###########################     interrupt    ##############################
+0308   0010             
+0309   0010 00                      BLOCK   $0038-$
+0310   0038             
+0311   0038             interrupt                           ;                       ' 13    |
+0312   0038 F5                      PUSH    AF              ;                       ' 11    |
+0313   0039                         sampleOutput            ;                       ' 67    | 102
+0313   0039 D9          >            EXX                     ;                           ' 4     | 4 (4)
+0313   003A 0A          >            LD      A, (BC)         ; read sample from buffer   ' 7     |
+0313   003B 85          >            ADD     L               ; unsign                    ' 4     |
+0313   003C 0C          >            INC     C               ; increment read address    ' 4     | 32 (36)
+0313   003D 12          >            LD      (DE), A         ; play sample               ' 7     |
+0313   003E CA 49 00    >            JP      Z, .end_read    ; end read ?                ' 10    |
+0313   0041 C3 44 00    >            JP      .loop
+0313   0044 3E 00       >            LD      A, $0
+0313   0046 C3 50 00    >            JP     .end             ;                           ' 10    |
+0313   0049 78          >            LD      A, B            ; next read buffer          ' 4     |
+0313   004A 3C          >            INC     A               ;                           ' 4     |
+0313   004B E6 1B       >            AND     $1B             ;                           ' 7     | 27 (63)
+0313   004D 47          >            LD      B, A            ;                           ' 4     |
+0313   004E DD 24       >            INC     IXH             ; mark overflow             ' 8     |
+0313   0050 D9          >            EXX                     ;                           ' 4     | 4 (67)
+0314   0051 C5                      PUSH    BC              ;                       ' 11    |
+0315   0052             
+0316   0052                         wait166                 ;                       ' 166   | 173 (275)
+0316   0052 3E 0A       >            LD      A, w            ; 7-2
+0316   0054 3D          >            DEC     A               ; 4
+0316   0055 20 FD       >            JR      NZ, .loop       ; 12
+0316   0057 00          >            NOP
+0317   0058 06 1E                   LD      B, 30           ; 30 samples for vblank ' 7     |
+0318   005A             
+0319   005A             vblank_loop
+0320   005A                         sampleOutput            ;                       ' 67    |
+0320   005A D9          >            EXX                     ;                           ' 4     | 4 (4)
+0320   005B 0A          >            LD      A, (BC)         ; read sample from buffer   ' 7     |
+0320   005C 85          >            ADD     L               ; unsign                    ' 4     |
+0320   005D 0C          >            INC     C               ; increment read address    ' 4     | 32 (36)
+0320   005E 12          >            LD      (DE), A         ; play sample               ' 7     |
+0320   005F CA 6A 00    >            JP      Z, .end_read    ; end read ?                ' 10    |
+0320   0062 C3 65 00    >            JP      .loop
+0320   0065 3E 00       >            LD      A, $0
+0320   0067 C3 71 00    >            JP     .end             ;                           ' 10    |
+0320   006A 78          >            LD      A, B            ; next read buffer          ' 4     |
+0320   006B 3C          >            INC     A               ;                           ' 4     |
+0320   006C E6 1B       >            AND     $1B             ;                           ' 7     | 27 (63)
+0320   006E 47          >            LD      B, A            ;                           ' 4     |
+0320   006F DD 24       >            INC     IXH             ; mark overflow             ' 8     |
+0320   0071 D9          >            EXX                     ;                           ' 4     | 4 (67)
+0321   0072                         wait194                 ;                       ' 194   | 275
+0321   0072 3E 0C       >            LD      A, w            ; 7-2
+0321   0074 3D          >            DEC     A               ; 4
+0321   0075 20 FD       >            JR      NZ, .loop       ; 12
+0322   0077 05                      DEC     B               ;                       ' 4     |
+0323   0078 C2 5A 00                JP      NZ, vblank_loop ; wait while vblank     ' 10    |
+0324   007B             
+0325   007B                         sampleOutput            ;                       ' 67    | 241
+0325   007B D9          >            EXX                     ;                           ' 4     | 4 (4)
+0325   007C 0A          >            LD      A, (BC)         ; read sample from buffer   ' 7     |
+0325   007D 85          >            ADD     L               ; unsign                    ' 4     |
+0325   007E 0C          >            INC     C               ; increment read address    ' 4     | 32 (36)
+0325   007F 12          >            LD      (DE), A         ; play sample               ' 7     |
+0325   0080 CA 8B 00    >            JP      Z, .end_read    ; end read ?                ' 10    |
+0325   0083 C3 86 00    >            JP      .loop
+0325   0086 3E 00       >            LD      A, $0
+0325   0088 C3 92 00    >            JP     .end             ;                           ' 10    |
+0325   008B 78          >            LD      A, B            ; next read buffer          ' 4     |
+0325   008C 3C          >            INC     A               ;                           ' 4     |
+0325   008D E6 1B       >            AND     $1B             ;                           ' 7     | 27 (63)
+0325   008F 47          >            LD      B, A            ;                           ' 4     |
+0325   0090 DD 24       >            INC     IXH             ; mark overflow             ' 8     |
+0325   0092 D9          >            EXX                     ;                           ' 4     | 4 (67)
+0326   0093                         wait174                 ;                       ' 174   |
+0326   0093 3E 0A       >            LD      A, w            ; 7-2
+0326   0095 3D          >            DEC     A               ; 4
+0326   0096 20 FD       >            JR      NZ, .loop       ; 12
+0326   0098 18 00       >            JR      .loop
+0327   009A             
+0328   009A C1                      POP     BC              ;                       ' 10    |
+0329   009B F1                      POP     AF              ;                       ' 10    | 34 (275)
+0330   009C ED 4D                   RETI                    ;                       ' 14    |
+0331   009E             
+0332   009E             
+0333   009E             ; ###########################       main       ##############################
+0334   009E             
+0335   009E 00                      BLOCK   $0200-$
+0336   0200             
+0337   0200             start
+0338   0200 21 04 01                LD      HL, PARAMS
+0339   0203 3E 00                   LD      A, $00
+0340   0205 06 20                   LD      B, $20
+0341   0207             
+0342   0207             cp_loop
+0343   0207 77                      LD      (HL), A         ; clear sample parameters
+0344   0208 23                      INC     HL
+0345   0209 10 FC                   DJNZ    cp_loop
+0346   020B             
+0347   020B 21 00 18                LD      HL, WAVBUFFER0
+0348   020E 3E 00                   LD      A, $00
+0349   0210 06 00                   LD      B, $00          ; for 256 * 4 bytes to clear
+0350   0212             
+0351   0212             cb_loop
+0352   0212 77                      LD      (HL), A         ; initialise buffers to silent
+0353   0213 23                      INC     HL
+0354   0214 77                      LD      (HL), A
+0355   0215 23                      INC     HL
+0356   0216 77                      LD      (HL), A
+0357   0217 23                      INC     HL
+0358   0218 77                      LD      (HL), A
+0359   0219 23                      INC     HL
+0360   021A 10 F6                   DJNZ    cb_loop
+0361   021C             
+0362   021C CD 09 04                CALL    initDAC         ; prepare DAC for output
+0363   021F             
+0364   021F             wait_nullwav
+0365   021F 2A 24 01                LD      HL, (NULLWAVADR)
+0366   0222 7C                      LD      A, H
+0367   0223 B5                      OR      L
+0368   0224 CA 1F 02                JP      Z, wait_nullwav ; wait for null wav address being initialised
+0369   0227 2A 26 01                LD      HL, (NULLWAVLEN)
+0370   022A 7C                      LD      A, H
+0371   022B B5                      OR      L
+0372   022C CA 1F 02                JP      Z, wait_nullwav ; wait for null wav len being initialised
+0373   022F             
+0374   022F                         stopChannel             ; stop channel
+0374   022F 2A 24 01    >            LD      HL, (NULLWAVADR)    ;                       ' 16
+0374   0232 22 14 01    >            LD      (IWAVADR), HL       ;                       ' 16
+0374   0235 2A 26 01    >            LD      HL, (NULLWAVLEN)    ;                       ' 16
+0374   0238 22 16 01    >            LD      (IWAVLEN), HL       ;                       ' 16
+0374   023B 21 00 00    >            LD      HL, $00                 ;                   ' 10
+0374   023E 22 02 01    >            LD      (STATUS), HL            ; clear status      ' 16
+0375   0241             
+0376   0241 01 00 18                LD      BC, WAVBUFFER0  ; BC' = read buffer
+0377   0244 2E 80                   LD      L, $80          ; L' = $80 (fast unsign)
+0378   0246 11 01 40                LD      DE, YMPORT1     ; DE' point to YMPORT1
+0379   0249 D9                      EXX
+0380   024A             
+0381   024A AF                      XOR     A
+0382   024B 08                      EX      AF, AF'         ; A' = current sample level
+0383   024C             
+0384   024C 11 00 1B                LD      DE, WAVBUFFER3  ; DE = write buf
+0385   024F DD 26 00                LD      IXH, 0          ; read not done
+0386   0252             
+0387   0252 3E 80                   LD      A, STATREADY
+0388   0254 32 02 01                LD      (STATUS), A     ; driver ready
+0389   0257             
+0390   0257             main_loop
+0391   0257             
+0392   0257             ; $00
+0393   0257                         sampleOutput                ;                       ' 67    |
+0393   0257 D9          >            EXX                     ;                           ' 4     | 4 (4)
+0393   0258 0A          >            LD      A, (BC)         ; read sample from buffer   ' 7     |
+0393   0259 85          >            ADD     L               ; unsign                    ' 4     |
+0393   025A 0C          >            INC     C               ; increment read address    ' 4     | 32 (36)
+0393   025B 12          >            LD      (DE), A         ; play sample               ' 7     |
+0393   025C CA 67 02    >            JP      Z, .end_read    ; end read ?                ' 10    |
+0393   025F C3 62 02    >            JP      .loop
+0393   0262 3E 00       >            LD      A, $0
+0393   0264 C3 6E 02    >            JP     .end             ;                           ' 10    |
+0393   0267 78          >            LD      A, B            ; next read buffer          ' 4     |
+0393   0268 3C          >            INC     A               ;                           ' 4     |
+0393   0269 E6 1B       >            AND     $1B             ;                           ' 7     | 27 (63)
+0393   026B 47          >            LD      B, A            ;                           ' 4     |
+0393   026C DD 24       >            INC     IXH             ; mark overflow             ' 8     |
+0393   026E D9          >            EXX                     ;                           ' 4     | 4 (67)
+0394   026F                         handlePlayCommand           ;                       ' 158   | 275
+0394   026F 21 00 01    >            LD      HL, COMMAND             ;                   ' 10
+0394   0272 CB 46       >            BIT     COMPLAY_SFT+ch, (HL)    ; play command ?    ' 12
+0394   0274 C2 81 02    >            JP      NZ, .play           ;                       ' 10    |
+0394   0277 3E 07       >            LD      A, w            ; 7-2
+0394   0279 3D          >            DEC     A               ; 4
+0394   027A 20 FD       >            JR      NZ, .loop       ; 12
+0394   027C 3E 00       >            LD      A, $0
+0394   027E C3 9A 02    >            JP      .end                ;                       ' 10    |
+0394   0281 21 00 01    >            LD      HL, COMMAND             ;                   ' 10
+0394   0284 CB 86       >            RES     COMPLAY_SFT+ch, (HL)    ; clear command     ' 15
+0394   0286 2A 04 01    >            LD      HL, (WAVADR)            ;                   ' 16
+0394   0289 22 14 01    >            LD      (IWAVADR), HL           ;                   ' 16
+0394   028C 2A 06 01    >            LD      HL, (WAVLEN)            ;                   ' 16
+0394   028F 22 16 01    >            LD      (IWAVLEN), HL           ;                   ' 16
+0394   0292 08          >            EX      AF, AF'                 ;                   ' 4
+0394   0293 AF          >            XOR     A                       ;                   ' 4
+0394   0294 08          >            EX      AF, AF'                 ;                   ' 4
+0394   0295 21 02 01    >            LD      HL, STATUS              ;                   ' 10
+0394   0298 CB C6       >            SET     STATPLAY_SFT+ch, (HL)   ; set status        ' 15
+0395   029A FB                      EI                          ; enable ints           ' 4     |
+0396   029B                         wait42                      ;                       ' 42    |
+0396   029B 3E 02       >            LD      A, w            ; 7-2
+0396   029D 3D          >            DEC     A               ; 4
+0396   029E 20 FD       >            JR      NZ, .loop       ; 12
+0396   02A0 00          >            NOP
+0396   02A1 00          >            NOP
+0397   02A2 F3                      DI                          ; disable ints          ' 4     |
+0398   02A3             
+0399   02A3             ; $01
+0400   02A3                         sampleOutput                ;                       ' 67    |
+0400   02A3 D9          >            EXX                     ;                           ' 4     | 4 (4)
+0400   02A4 0A          >            LD      A, (BC)         ; read sample from buffer   ' 7     |
+0400   02A5 85          >            ADD     L               ; unsign                    ' 4     |
+0400   02A6 0C          >            INC     C               ; increment read address    ' 4     | 32 (36)
+0400   02A7 12          >            LD      (DE), A         ; play sample               ' 7     |
+0400   02A8 CA B3 02    >            JP      Z, .end_read    ; end read ?                ' 10    |
+0400   02AB C3 AE 02    >            JP      .loop
+0400   02AE 3E 00       >            LD      A, $0
+0400   02B0 C3 BA 02    >            JP     .end             ;                           ' 10    |
+0400   02B3 78          >            LD      A, B            ; next read buffer          ' 4     |
+0400   02B4 3C          >            INC     A               ;                           ' 4     |
+0400   02B5 E6 1B       >            AND     $1B             ;                           ' 7     | 27 (63)
+0400   02B7 47          >            LD      B, A            ;                           ' 4     |
+0400   02B8 DD 24       >            INC     IXH             ; mark overflow             ' 8     |
+0400   02BA D9          >            EXX                     ;                           ' 4     | 4 (67)
+0401   02BB                         prepareChannel              ; BC point to src       ' 160   |
+0401   02BB 21 14 01    >            LD      HL, IWAVADR         ; point to sample adr   ' 10    |
+0401   02BE 46          >            LD      B, (HL)             ; B = bit 7-14          ' 7     |
+0401   02BF 2C          >            INC     L                   ;                       ' 4     | 129 (129)
+0401   02C0 7E          >            LD      A, (HL)             ; A = bit 15-22         ' 7     |
+0401   02C1 21 00 60    >            LD  HL, BANKREG         ; HL = BANKREG              ' 10
+0401   02C4 77          >            LD  (HL), A             ; #1 (bit 15)               ' 7
+0401   02C5 1F          >            RRA                     ;                           ' 4
+0401   02C6 77          >            LD  (HL), A             ; #2 (bit 16)               ' 7
+0401   02C7 1F          >            RRA                     ;                           ' 4
+0401   02C8 77          >            LD  (HL), A             ; #3 (bit 17)               ' 7
+0401   02C9 1F          >            RRA                     ;                           ' 4
+0401   02CA 77          >            LD  (HL), A             ; #4 (bit 18)               ' 7
+0401   02CB 1F          >            RRA                     ;                           ' 4
+0401   02CC 77          >            LD  (HL), A             ; #5 (bit 19)               ' 7
+0401   02CD 1F          >            RRA                     ;                           ' 4
+0401   02CE 77          >            LD  (HL), A             ; #6 (bit 20)               ' 7
+0401   02CF 1F          >            RRA                     ;                           ' 4
+0401   02D0 77          >            LD  (HL), A             ; #7 (bit 21)               ' 7
+0401   02D1 1F          >            RRA                     ;                           ' 4
+0401   02D2 77          >            LD  (HL), A             ; #8 (bit 22)               ' 7
+0401   02D3 75          >            LD  (HL), L             ; #9 (bit 23 = 0)           ' 7
+0401   02D4 78          >            LD      A, B                ; A = bit 7-14          ' 4     |
+0401   02D5 37          >            SCF                         ;                       ' 4     |
+0401   02D6 1F          >            RRA                         ; A = $80 | bit 8-14    ' 4     |
+0401   02D7 47          >            LD      B, A                ; B = high byte src     ' 4     | 31 (160)
+0401   02D8 1F          >            RRA                         ; A = bit 7 + ???       ' 4     |
+0401   02D9 E6 80       >            AND     $80                 ; A = bit 7 only        ' 7     |
+0401   02DB 4F          >            LD      C, A                ; BC = src adr          ' 4     |
+0402   02DC FB                      EI                          ; enable ints           ' 4     |
+0403   02DD                         wait29                      ;                       ' 29    | 275
+0403   02DD 18 00       >            JR      .loop
+0403   02DF ED 4F       >            LD      R, A
+0403   02E1 00          >            NOP
+0403   02E2 00          >            NOP
+0404   02E3 F3                      DI                          ; disable ints          ' 4     |
+0405   02E4 DD 2E 40                LD      IXL, 64             ; prepare loop counter  ' 11    |
+0406   02E7             
+0407   02E7             ; $02-$41
+0408   02E7             loop_decode
+0409   02E7                         sampleOutput                ;                       ' 67    |
+0409   02E7 D9          >            EXX                     ;                           ' 4     | 4 (4)
+0409   02E8 0A          >            LD      A, (BC)         ; read sample from buffer   ' 7     |
+0409   02E9 85          >            ADD     L               ; unsign                    ' 4     |
+0409   02EA 0C          >            INC     C               ; increment read address    ' 4     | 32 (36)
+0409   02EB 12          >            LD      (DE), A         ; play sample               ' 7     |
+0409   02EC CA F7 02    >            JP      Z, .end_read    ; end read ?                ' 10    |
+0409   02EF C3 F2 02    >            JP      .loop
+0409   02F2 3E 00       >            LD      A, $0
+0409   02F4 C3 FE 02    >            JP     .end             ;                           ' 10    |
+0409   02F7 78          >            LD      A, B            ; next read buffer          ' 4     |
+0409   02F8 3C          >            INC     A               ;                           ' 4     |
+0409   02F9 E6 1B       >            AND     $1B             ;                           ' 7     | 27 (63)
+0409   02FB 47          >            LD      B, A            ;                           ' 4     |
+0409   02FC DD 24       >            INC     IXH             ; mark overflow             ' 8     |
+0409   02FE D9          >            EXX                     ;                           ' 4     | 4 (67)
+0410   02FF                         unpack2                     ; unpack 2 samples      ' 83    |
+0410   02FF 0A          >            LD      A, (BC)         ; read 2 ADPCM samples      ' 7+2   |
+0410   0300 0C          >            INC     C               ; next                      ' 4     | 35 (35)
+0410   0301 26 06       >            LD      H, $06          ; H = DELTATAB >> 9         ' 7     |
+0410   0303 6F          >            LD      L, A            ;                           ' 4     |
+0410   0304 29          >            ADD     HL, HL          ; HL point to delta val     ' 11    |
+0410   0305 08          >            EX      AF, AF'         ; A = current level         ' 4     | 4 (39)
+0410   0306 86          >            ADD     (HL)            ; decode                    ' 7     |
+0410   0307 2C          >            INC     L               ; next delta                ' 4     |
+0410   0308 12          >            LD      (DE), A         ; write sample in buffer    ' 7     |
+0410   0309 1C          >            INC     E               ;                           ' 4     |
+0410   030A 86          >            ADD     (HL)            ; decode                    ' 7     | 40 (79)
+0410   030B 12          >            LD      (DE), A         ; write sample in buffer    ' 7     |
+0410   030C 1C          >            INC     E               ;                           ' 4     |
+0410   030D 08          >            EX      AF, AF'         ; A' = current level        ' 4     | 4 (83)
+0411   030E                         unpack2                     ; unpack 2 samples      ' 83    |
+0411   030E 0A          >            LD      A, (BC)         ; read 2 ADPCM samples      ' 7+2   |
+0411   030F 0C          >            INC     C               ; next                      ' 4     | 35 (35)
+0411   0310 26 06       >            LD      H, $06          ; H = DELTATAB >> 9         ' 7     |
+0411   0312 6F          >            LD      L, A            ;                           ' 4     |
+0411   0313 29          >            ADD     HL, HL          ; HL point to delta val     ' 11    |
+0411   0314 08          >            EX      AF, AF'         ; A = current level         ' 4     | 4 (39)
+0411   0315 86          >            ADD     (HL)            ; decode                    ' 7     |
+0411   0316 2C          >            INC     L               ; next delta                ' 4     |
+0411   0317 12          >            LD      (DE), A         ; write sample in buffer    ' 7     |
+0411   0318 1C          >            INC     E               ;                           ' 4     |
+0411   0319 86          >            ADD     (HL)            ; decode                    ' 7     | 40 (79)
+0411   031A 12          >            LD      (DE), A         ; write sample in buffer    ' 7     |
+0411   031B 1C          >            INC     E               ;                           ' 4     |
+0411   031C 08          >            EX      AF, AF'         ; A' = current level        ' 4     | 4 (83)
+0412   031D FB                      EI                          ; enable ints           ' 4     |
+0413   031E                         wait16                      ;                       ' 16    | 275
+0413   031E 18 00       >            JR      .loop
+0413   0320 00          >            NOP
+0414   0321 F3                      DI                          ; disable ints          ' 4     |
+0415   0322 DD 2D                   DEC     IXL                 ;                       ' 8     |
+0416   0324 C2 E7 02                JP      NZ, loop_decode     ;                       ' 10    |
+0417   0327             
+0418   0327             ; $42
+0419   0327                         sampleOutput                ;                       ' 67    |
+0419   0327 D9          >            EXX                     ;                           ' 4     | 4 (4)
+0419   0328 0A          >            LD      A, (BC)         ; read sample from buffer   ' 7     |
+0419   0329 85          >            ADD     L               ; unsign                    ' 4     |
+0419   032A 0C          >            INC     C               ; increment read address    ' 4     | 32 (36)
+0419   032B 12          >            LD      (DE), A         ; play sample               ' 7     |
+0419   032C CA 37 03    >            JP      Z, .end_read    ; end read ?                ' 10    |
+0419   032F C3 32 03    >            JP      .loop
+0419   0332 3E 00       >            LD      A, $0
+0419   0334 C3 3E 03    >            JP     .end             ;                           ' 10    |
+0419   0337 78          >            LD      A, B            ; next read buffer          ' 4     |
+0419   0338 3C          >            INC     A               ;                           ' 4     |
+0419   0339 E6 1B       >            AND     $1B             ;                           ' 7     | 27 (63)
+0419   033B 47          >            LD      B, A            ;                           ' 4     |
+0419   033C DD 24       >            INC     IXH             ; mark overflow             ' 8     |
+0419   033E D9          >            EXX                     ;                           ' 4     | 4 (67)
+0420   033F                         nextWriteBuffer             ; next write buffer     ' 19    |
+0420   033F 7A          >            LD      A, D            ; next write buffer         ' 4
+0420   0340 3C          >            INC     A               ;                           ' 4
+0420   0341 E6 1B       >            AND     $1B             ;                           ' 7
+0420   0343 57          >            LD      D, A            ;                           ' 4
+0421   0344                         updateChannelData           ; update channel data   ' 76    | 275
+0421   0344 2A 14 01    >            LD      HL, (IWAVADR)           ; increment address ' 16    |
+0421   0347 23          >            INC     HL                      ;                   ' 6     | 38
+0421   0348 22 14 01    >            LD      (IWAVADR), HL           ;                   ' 16    |
+0421   034B 2A 16 01    >            LD      HL, (IWAVLEN)           ; decrement lenght  ' 16    |
+0421   034E 2B          >            DEC     HL                      ;                   ' 6     | 38 (76)
+0421   034F 22 16 01    >            LD      (IWAVLEN), HL           ;                   ' 16    |
+0422   0352 FB                      EI                          ; enable ints           ' 4     |
+0423   0353                         wait105                     ;                       ' 105   |
+0423   0353 3E 06       >            LD      A, w            ; 7-2
+0423   0355 3D          >            DEC     A               ; 4
+0423   0356 20 FD       >            JR      NZ, .loop       ; 12
+0423   0358 3E 00       >            LD      A, $0
+0424   035A F3                      DI                          ; disable ints          ' 4     |
+0425   035B             
+0426   035B             ; $43
+0427   035B                         sampleOutput                ;                       ' 67    |
+0427   035B D9          >            EXX                     ;                           ' 4     | 4 (4)
+0427   035C 0A          >            LD      A, (BC)         ; read sample from buffer   ' 7     |
+0427   035D 85          >            ADD     L               ; unsign                    ' 4     |
+0427   035E 0C          >            INC     C               ; increment read address    ' 4     | 32 (36)
+0427   035F 12          >            LD      (DE), A         ; play sample               ' 7     |
+0427   0360 CA 6B 03    >            JP      Z, .end_read    ; end read ?                ' 10    |
+0427   0363 C3 66 03    >            JP      .loop
+0427   0366 3E 00       >            LD      A, $0
+0427   0368 C3 72 03    >            JP     .end             ;                           ' 10    |
+0427   036B 78          >            LD      A, B            ; next read buffer          ' 4     |
+0427   036C 3C          >            INC     A               ;                           ' 4     |
+0427   036D E6 1B       >            AND     $1B             ;                           ' 7     | 27 (63)
+0427   036F 47          >            LD      B, A            ;                           ' 4     |
+0427   0370 DD 24       >            INC     IXH             ; mark overflow             ' 8     |
+0427   0372 D9          >            EXX                     ;                           ' 4     | 4 (67)
+0428   0373                         checkChannelEnd             ;                       ' 164   |
+0428   0373 2A 16 01    >            LD      HL, (IWAVLEN)       ; get sample lenght     ' 16    |
+0428   0376 7C          >            LD      A, H                ;                       ' 4     | 34 (34)
+0428   0377 B5          >            OR      L                   ;                       ' 4     |
+0428   0378 CA 85 03    >            JP      Z, .done            ; sample done ?         ' 10    |
+0428   037B 3E 07       >            LD      A, w            ; 7-2
+0428   037D 3D          >            DEC     A               ; 4
+0428   037E 20 FD       >            JR      NZ, .loop       ; 12
+0428   0380 3E 00       >            LD      A, $0
+0428   0382 C3 B5 03    >            JP      .end                ;                       ' 10    |
+0428   0385 21 03 01    >            LD      HL, STATUS+1            ;                   ' 10
+0428   0388 CB 46       >            BIT     STATPLAY_SFT+ch, (HL)   ; get status        ' 12
+0428   038A CA A1 03    >            JP      Z, .stop            ;                       ' 10    |
+0428   038D 2A 04 01    >            LD      HL, (WAVADR)            ;                   ' 16
+0428   0390 22 14 01    >            LD      (IWAVADR), HL           ;                   ' 16
+0428   0393 2A 06 01    >            LD      HL, (WAVLEN)            ;                   ' 16
+0428   0396 22 16 01    >            LD      (IWAVLEN), HL           ;                   ' 16
+0428   0399 08          >            EX      AF, AF'                 ;                   ' 4
+0428   039A AF          >            XOR     A                       ;                   ' 4
+0428   039B 08          >            EX      AF, AF'                 ;                   ' 4
+0428   039C 3E 00       >            LD      A, $0
+0428   039E C3 B5 03    >            JP      .end                ;                       ' 10    |
+0428   03A1 2A 24 01    >            LD      HL, (NULLWAVADR)    ;                       ' 16
+0428   03A4 22 14 01    >            LD      (IWAVADR), HL       ;                       ' 16
+0428   03A7 2A 26 01    >            LD      HL, (NULLWAVLEN)    ;                       ' 16
+0428   03AA 22 16 01    >            LD      (IWAVLEN), HL       ;                       ' 16
+0428   03AD 21 00 00    >            LD      HL, $00                 ;                   ' 10
+0428   03B0 22 02 01    >            LD      (STATUS), HL            ; clear status      ' 16
+0428   03B3 00          >            NOP
+0428   03B4 00          >            NOP
+0429   03B5 FB                      EI                          ; enable ints           ' 4     | 275
+0430   03B6                         wait36                      ;                       ' 36    |
+0430   03B6 ED 4F       >            LD      R, A
+0430   03B8 ED 4F       >            LD      R, A
+0430   03BA ED 4F       >            LD      R, A
+0430   03BC ED 4F       >            LD      R, A
+0431   03BE F3                      DI                          ; disable ints          ' 4     |
+0432   03BF             
+0433   03BF             ; free time here
+0434   03BF             ; --------------
+0435   03BF             
+0436   03BF             loop_free
+0437   03BF             ; $44-$xx
+0438   03BF                         sampleOutput                ;                       ' 67    |
+0438   03BF D9          >            EXX                     ;                           ' 4     | 4 (4)
+0438   03C0 0A          >            LD      A, (BC)         ; read sample from buffer   ' 7     |
+0438   03C1 85          >            ADD     L               ; unsign                    ' 4     |
+0438   03C2 0C          >            INC     C               ; increment read address    ' 4     | 32 (36)
+0438   03C3 12          >            LD      (DE), A         ; play sample               ' 7     |
+0438   03C4 CA CF 03    >            JP      Z, .end_read    ; end read ?                ' 10    |
+0438   03C7 C3 CA 03    >            JP      .loop
+0438   03CA 3E 00       >            LD      A, $0
+0438   03CC C3 D6 03    >            JP     .end             ;                           ' 10    |
+0438   03CF 78          >            LD      A, B            ; next read buffer          ' 4     |
+0438   03D0 3C          >            INC     A               ;                           ' 4     |
+0438   03D1 E6 1B       >            AND     $1B             ;                           ' 7     | 27 (63)
+0438   03D3 47          >            LD      B, A            ;                           ' 4     |
+0438   03D4 DD 24       >            INC     IXH             ; mark overflow             ' 8     |
+0438   03D6 D9          >            EXX                     ;                           ' 4     | 4 (67)
+0439   03D7 FB                      EI                          ; enable ints           ' 4     |
+0440   03D8                         wait178                     ;                       ' 178   |
+0440   03D8 3E 0B       >            LD      A, w            ; 7-2
+0440   03DA 3D          >            DEC     A               ; 4
+0440   03DB 20 FD       >            JR      NZ, .loop       ; 12
+0441   03DD F3                      DI                          ; disable ints          ' 4     | 275
+0442   03DE AF                      XOR     A                   ;                       ' 4     |
+0443   03DF DD B4                   OR      IXH                 ; read not yet done ?   ' 8     |
+0444   03E1 CA BF 03                JP      Z, loop_free        ; loop                  ' 10    |
+0445   03E4             
+0446   03E4             ; $xx
+0447   03E4                         sampleOutput                ;                       ' 67    |
+0447   03E4 D9          >            EXX                     ;                           ' 4     | 4 (4)
+0447   03E5 0A          >            LD      A, (BC)         ; read sample from buffer   ' 7     |
+0447   03E6 85          >            ADD     L               ; unsign                    ' 4     |
+0447   03E7 0C          >            INC     C               ; increment read address    ' 4     | 32 (36)
+0447   03E8 12          >            LD      (DE), A         ; play sample               ' 7     |
+0447   03E9 CA F4 03    >            JP      Z, .end_read    ; end read ?                ' 10    |
+0447   03EC C3 EF 03    >            JP      .loop
+0447   03EF 3E 00       >            LD      A, $0
+0447   03F1 C3 FB 03    >            JP     .end             ;                           ' 10    |
+0447   03F4 78          >            LD      A, B            ; next read buffer          ' 4     |
+0447   03F5 3C          >            INC     A               ;                           ' 4     |
+0447   03F6 E6 1B       >            AND     $1B             ;                           ' 7     | 27 (63)
+0447   03F8 47          >            LD      B, A            ;                           ' 4     |
+0447   03F9 DD 24       >            INC     IXH             ; mark overflow             ' 8     |
+0447   03FB D9          >            EXX                     ;                           ' 4     | 4 (67)
+0448   03FC DD 25                   DEC     IXH                 ; read done             ' 8     |
+0449   03FE FB                      EI                          ; enable ints           ' 4     |
+0450   03FF                         wait182                     ;                       ' 182   | 275
+0450   03FF 3E 0B       >            LD      A, w            ; 7-2
+0450   0401 3D          >            DEC     A               ; 4
+0450   0402 20 FD       >            JR      NZ, .loop       ; 12
+0450   0404 00          >            NOP
+0451   0405 F3                      DI                          ; disable ints          ' 4     |
+0452   0406 C3 57 02                JP      main_loop           ;                       ' 10    |
+0453   0409             
+0454   0409             
+0455   0409             ; ##############################  functions  ################################
+0456   0409             
+0457   0409                         INCLUDE "z80_fct.i80"   ; basic functions
+0001+  0409             ; ########################### function #############################
+0002+  0409             
+0003+  0409             ; initDAC
+0004+  0409             ; -----------
+0005+  0409             ; HL <-  YMPORT0
+0006+  0409             ; DE <-  $2A80
+0007+  0409             ;
+0008+  0409             ; prepare DAC for output
+0009+  0409             
+0010+  0409             initDAC
+0011+  0409 11 80 2B                LD      DE, $2B80
+0012+  040C CD 16 04                CALL    writeYM0        ; enable DAC
+0013+  040F 11 80 2A                LD      DE, $2A80
+0014+  0412 CD 16 04                CALL    writeYM0        ; DAC data to silent
+0015+  0415 C9                      RET
+0016+  0416             
+0017+  0416             ; writeYM0 / writeYM1
+0018+  0416             ; -------------------
+0019+  0416             ; D   -> address
+0020+  0416             ; E   -> value
+0021+  0416             ; HL <-  YMPORT0 / YMPORT2
+0022+  0416             ;
+0023+  0416             ; write to YM2612
+0024+  0416             
+0025+  0416             writeYM0
+0026+  0416 21 00 40                LD      HL, YMPORT0     ; HL = YM port 0            ' 10    | (10)
+0027+  0419             
+0028+  0419             .wait0
+0029+  0419 CB 7E                   BIT     7, (HL)         ; test YM not busy          ' 12    |
+0030+  041B 20 FC                   JR      NZ, .wait0      ;                           ' 7     | 19 (29)
+0031+  041D             
+0032+  041D 72                      LD      (HL), D         ; write address             ' 7     | (36)
+0033+  041E             
+0034+  041E             .wait1
+0035+  041E CB 7E                   BIT     7, (HL)         ; test YM not busy          ' 12    |
+0036+  0420 20 FC                   JR      NZ, .wait1      ;                           ' 7     | 19 (55)
+0037+  0422             
+0038+  0422 2C                      INC     L               ; next port                 ' 4     | 11 (66)
+0039+  0423 73                      LD      (HL), E         ; write value               ' 7     |
+0040+  0424             
+0041+  0424 C9                      RET                     ; end                       ' 10    | (76)
+0042+  0425             
+0043+  0425             
+0044+  0425             writeYM1
+0045+  0425 21 00 40                LD      HL, YMPORT0     ; HL = YM port 0            ' 10    | (10)
+0046+  0428             
+0047+  0428             .wait0
+0048+  0428 CB 7E                   BIT     7, (HL)         ; test YM not busy          ' 12    |
+0049+  042A 20 FC                   JR      NZ, .wait0      ;                           ' 7     | 19 (29)
+0050+  042C             
+0051+  042C 2C                      INC     L               ;                           ' 4     |
+0052+  042D 2C                      INC     L               ; HL = YM port 2            ' 4     |
+0053+  042E 72                      LD      (HL), D         ; write address             ' 7     | 23 (52)
+0054+  042F 2D                      DEC     L               ;                           ' 4     |
+0055+  0430 2D                      DEC     L               ; HL = YM port 0            ' 4     |
+0056+  0431             
+0057+  0431             .wait1
+0058+  0431 CB 7E                   BIT     7, (HL)         ; test YM not busy          ' 12    |
+0059+  0433 20 FC                   JR      NZ, .wait1      ;                           ' 7     | 19 (71)
+0060+  0435             
+0061+  0435 2C                      INC     L               ;                           ' 4     |
+0062+  0436 2C                      INC     L               ;                           ' 4     |
+0063+  0437 2C                      INC     L               ; HL = YM port 3            ' 4     | 19 (90)
+0064+  0438 73                      LD      (HL), E         ; write value               ' 7     |
+0065+  0439             
+0066+  0439 C9                      RET                     ; end                       ' 10    | (100)
+0458   043A             
+0459   043A             
+0460   043A             ; ##############################    tables   ################################
+0461   043A             
+0462   043A 00                      BLOCK   $0C00-$
+0463   0C00             
+0464   0C00             DELTATAB
+0465   0C00             DELTATAB_0  DB      -34, -34, -21, -34, -13, -34, -8, -34, -5, -34, -3, -34, -2, -34, -1, -34
+0465   0C00 DEDEEBDEF3DEF8DEFBDEFDDEFEDEFFDE
+0466   0C10                         DB      0, -34, 1, -34, 2, -34, 3, -34, 5, -34, 8, -34, 13, -34, 21, -34
+0466   0C10 00DE01DE02DE03DE05DE08DE0DDE15DE
+0467   0C20             DELTATAB_1  DB      -34, -21, -21, -21, -13, -21, -8, -21, -5, -21, -3, -21, -2, -21, -1, -21
+0467   0C20 DEEBEBEBF3EBF8EBFBEBFDEBFEEBFFEB
+0468   0C30                         DB      0, -21, 1, -21, 2, -21, 3, -21, 5, -21, 8, -21, 13, -21, 21, -21
+0468   0C30 00EB01EB02EB03EB05EB08EB0DEB15EB
+0469   0C40             DELTATAB_2  DB      -34, -13, -21, -13, -13, -13, -8, -13, -5, -13, -3, -13, -2, -13, -1, -13
+0469   0C40 DEF3EBF3F3F3F8F3FBF3FDF3FEF3FFF3
+0470   0C50                         DB      0, -13, 1, -13, 2, -13, 3, -13, 5, -13, 8, -13, 13, -13, 21, -13
+0470   0C50 00F301F302F303F305F308F30DF315F3
+0471   0C60             DELTATAB_3  DB      -34, -8, -21, -8, -13, -8, -8, -8, -5, -8, -3, -8, -2, -8, -1, -8
+0471   0C60 DEF8EBF8F3F8F8F8FBF8FDF8FEF8FFF8
+0472   0C70                         DB      0, -8, 1, -8, 2, -8, 3, -8, 5, -8, 8, -8, 13, -8, 21, -8
+0472   0C70 00F801F802F803F805F808F80DF815F8
+0473   0C80             DELTATAB_4  DB      -34, -5, -21, -5, -13, -5, -8, -5, -5, -5, -3, -5, -2, -5, -1, -5
+0473   0C80 DEFBEBFBF3FBF8FBFBFBFDFBFEFBFFFB
+0474   0C90                         DB      0, -5, 1, -5, 2, -5, 3, -5, 5, -5, 8, -5, 13, -5, 21, -5
+0474   0C90 00FB01FB02FB03FB05FB08FB0DFB15FB
+0475   0CA0             DELTATAB_5  DB      -34, -3, -21, -3, -13, -3, -8, -3, -5, -3, -3, -3, -2, -3, -1, -3
+0475   0CA0 DEFDEBFDF3FDF8FDFBFDFDFDFEFDFFFD
+0476   0CB0                         DB      0, -3, 1, -3, 2, -3, 3, -3, 5, -3, 8, -3, 13, -3, 21, -3
+0476   0CB0 00FD01FD02FD03FD05FD08FD0DFD15FD
+0477   0CC0             DELTATAB_6  DB      -34, -2, -21, -2, -13, -2, -8, -2, -5, -2, -3, -2, -2, -2, -1, -2
+0477   0CC0 DEFEEBFEF3FEF8FEFBFEFDFEFEFEFFFE
+0478   0CD0                         DB      0, -2, 1, -2, 2, -2, 3, -2, 5, -2, 8, -2, 13, -2, 21, -2
+0478   0CD0 00FE01FE02FE03FE05FE08FE0DFE15FE
+0479   0CE0             DELTATAB_7  DB      -34, -1, -21, -1, -13, -1, -8, -1, -5, -1, -3, -1, -2, -1, -1, -1
+0479   0CE0 DEFFEBFFF3FFF8FFFBFFFDFFFEFFFFFF
+0480   0CF0                         DB      0, -1, 1, -1, 2, -1, 3, -1, 5, -1, 8, -1, 13, -1, 21, -1
+0480   0CF0 00FF01FF02FF03FF05FF08FF0DFF15FF
+0481   0D00             DELTATAB_8  DB      -34, 0, -21, 0, -13, 0, -8, 0, -5, 0, -3, 0, -2, 0, -1, 0
+0481   0D00 DE00EB00F300F800FB00FD00FE00FF00
+0482   0D10                         DB      0, 0, 1, 0, 2, 0, 3, 0, 5, 0, 8, 0, 13, 0, 21, 0
+0482   0D10 0000010002000300050008000D001500
+0483   0D20             DELTATAB_9  DB      -34, 1, -21, 1, -13, 1, -8, 1, -5, 1, -3, 1, -2, 1, -1, 1
+0483   0D20 DE01EB01F301F801FB01FD01FE01FF01
+0484   0D30                         DB      0, 1, 1, 1, 2, 1, 3, 1, 5, 1, 8, 1, 13, 1, 21, 1
+0484   0D30 0001010102010301050108010D011501
+0485   0D40             DELTATAB_A  DB      -34, 2, -21, 2, -13, 2, -8, 2, -5, 2, -3, 2, -2, 2, -1, 2
+0485   0D40 DE02EB02F302F802FB02FD02FE02FF02
+0486   0D50                         DB      0, 2, 1, 2, 2, 2, 3, 2, 5, 2, 8, 2, 13, 2, 21, 2
+0486   0D50 0002010202020302050208020D021502
+0487   0D60             DELTATAB_B  DB      -34, 3, -21, 3, -13, 3, -8, 3, -5, 3, -3, 3, -2, 3, -1, 3
+0487   0D60 DE03EB03F303F803FB03FD03FE03FF03
+0488   0D70                         DB      0, 3, 1, 3, 2, 3, 3, 3, 5, 3, 8, 3, 13, 3, 21, 3
+0488   0D70 0003010302030303050308030D031503
+0489   0D80             DELTATAB_C  DB      -34, 5, -21, 5, -13, 5, -8, 5, -5, 5, -3, 5, -2, 5, -1, 5
+0489   0D80 DE05EB05F305F805FB05FD05FE05FF05
+0490   0D90                         DB      0, 5, 1, 5, 2, 5, 3, 5, 5, 5, 8, 5, 13, 5, 21, 5
+0490   0D90 0005010502050305050508050D051505
+0491   0DA0             DELTATAB_D  DB      -34, 8, -21, 8, -13, 8, -8, 8, -5, 8, -3, 8, -2, 8, -1, 8
+0491   0DA0 DE08EB08F308F808FB08FD08FE08FF08
+0492   0DB0                         DB      0, 8, 1, 8, 2, 8, 3, 8, 5, 8, 8, 8, 13, 8, 21, 8
+0492   0DB0 0008010802080308050808080D081508
+0493   0DC0             DELTATAB_E  DB      -34, 13, -21, 13, -13, 13, -8, 13, -5, 13, -3, 13, -2, 13, -1, 13
+0493   0DC0 DE0DEB0DF30DF80DFB0DFD0DFE0DFF0D
+0494   0DD0                         DB      0, 13, 1, 13, 2, 13, 3, 13, 5, 13, 8, 13, 13, 13, 21, 13
+0494   0DD0 000D010D020D030D050D080D0D0D150D
+0495   0DE0             DELTATAB_F  DB      -34, 21, -21, 21, -13, 21, -8, 21, -5, 21, -3, 21, -2, 21, -1, 21
+0495   0DE0 DE15EB15F315F815FB15FD15FE15FF15
+0496   0DF0                         DB      0, 21, 1, 21, 2, 21, 3, 21, 5, 21, 8, 21, 13, 21, 21, 21
+0496   0DF0 0015011502150315051508150D151515
+0497   0E00             
+0498   0E00                         END
