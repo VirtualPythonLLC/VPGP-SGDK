@@ -1,11 +1,11 @@
-19:50:16 **** Incremental Build of configuration Default for project Apple02 ****
-"C:\\Users\\Stephen\\Documents\\GitHub\\VPGP-SGDK\\sdk\\bin\\make" -f C:/Users/Stephen/Documents/GitHub/VPGP-SGDK/sdk/makefile.gen Default 
-C:/Users/Stephen/Documents/GitHub/VPGP-SGDK/sdk/bin/mkdir -p src/boot
-C:/Users/Stephen/Documents/GitHub/VPGP-SGDK/sdk/bin/mkdir -p out
-C:/Users/Stephen/Documents/GitHub/VPGP-SGDK/sdk/bin/mkdir -p out/src
-C:/Users/Stephen/Documents/GitHub/VPGP-SGDK/sdk/bin/mkdir -p out/res
-echo "out/res/resource.o out/src/z80_drv.o out/src/tile_a.o out/src/tile_dico_a.o out/src/tilemap_a.o out/src/flip.o out/src/main.o out/src/pcm.o out/src/tile.o out/src/tilemap.o" > out/cmd_
-C:/Users/Stephen/Documents/GitHub/VPGP-SGDK/sdk/bin/gcc -BC:/Users/Stephen/Documents/GitHub/VPGP-SGDK/sdk/bin -n -T C:/Users/Stephen/Documents/GitHub/VPGP-SGDK/sdk/md.ld -nostdlib out/sega.o @out/cmd_ C:/Users/Stephen/Documents/GitHub/VPGP-SGDK/sdk/lib/libmd.a C:/Users/Stephen/Documents/GitHub/VPGP-SGDK/sdk/lib/libgcc.a -o out/rom.out
-C:/Users/Stephen/Documents/GitHub/VPGP-SGDK/sdk/bin/rm out/cmd_
-C:/Users/Stephen/Documents/GitHub/VPGP-SGDK/sdk/bin/objcopy -O binary out/rom.out out/rom.bin
-C:/Users/Stephen/Documents/GitHub/VPGP-SGDK/sdk/bin/sizebnd out/rom.bin -sizealign 131072
+20:28:37 **** Incremental Build of configuration Default for project Game_example ****
+"C:\\Users\\Stephen\\Documents\\vpsg\\sdk\\bin\\make" -f "C:\\Users\\Stephen\\Documents\\vpsg\\sdk/makefile.gen" Default 
+C:/Users/Stephen/Documents/vpsg/sdk/bin/mkdir -p src/boot
+C:/Users/Stephen/Documents/vpsg/sdk/bin/mkdir -p out
+C:/Users/Stephen/Documents/vpsg/sdk/bin/mkdir -p out/src
+C:/Users/Stephen/Documents/vpsg/sdk/bin/mkdir -p out/res
+echo "out/res/gfx.o out/res/sound.o out/res/sprite.o out/src/main.o" > out/cmd_
+C:/Users/Stephen/Documents/vpsg/sdk/bin/gcc -BC:/Users/Stephen/Documents/vpsg/sdk/bin -n -T C:/Users/Stephen/Documents/vpsg/sdk/md.ld -nostdlib out/sega.o @out/cmd_ C:/Users/Stephen/Documents/vpsg/sdk/lib/libmd.a C:/Users/Stephen/Documents/vpsg/sdk/lib/libgcc.a -o out/rom.out
+C:/Users/Stephen/Documents/vpsg/sdk/bin/rm out/cmd_
+C:/Users/Stephen/Documents/vpsg/sdk/bin/objcopy -O binary out/rom.out out/rom.bin
+C:/Users/Stephen/Documents/vpsg/sdk/bin/sizebnd out/rom.bin -sizealign 131072
