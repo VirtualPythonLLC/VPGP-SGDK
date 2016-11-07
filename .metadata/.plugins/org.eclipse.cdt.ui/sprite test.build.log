@@ -1,0 +1,15 @@
+19:38:34 **** Build of configuration Release for project sprite test ****
+"C:\\genesis\\sdk\\bin\\make" -f C:/genesis/sdk/makefile.gen 
+C:/genesis/sdk/bin/mkdir -p src/boot
+C:/genesis/sdk/bin/mkdir -p out
+C:/genesis/sdk/bin/mkdir -p out/src
+C:/genesis/sdk/bin/mkdir -p out/res
+C:/genesis/sdk/bin/gcc -BC:/genesis/sdk/bin -n -T C:/genesis/sdk/md.ld -nostdlib out/sega.o @out/cmd_ C:/genesis/sdk/lib/libmd.a C:/genesis/sdk/lib/libgcc.a -o out/rom.out
+C:/genesis/sdk/lib/libmd.a(sys.o): In function `_start_entry':
+sys.c:(.text+0x906): undefined reference to `main'
+C:/genesis/sdk/lib/libmd.a(sys.o): In function `_reset_entry':
+sys.c:(.text+0x914): undefined reference to `main'
+make: *** [out/rom.out] Error 1
+
+19:38:35 Build Finished (took 989ms)
+

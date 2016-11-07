@@ -1,0 +1,8 @@
+15:40:11 **** Build of configuration Release for project Hello ****
+"C:\\genesis\\sdk\\bin\\make" -f "C:\\genesis\\sdk/makefile.gen" 
+C:\genesis\sdk/bin/mkdir -p src/boot
+zsh: no such file or directory: C:genesissdk\bin\mkdir
+make: *** [pre-build] Error 1
+
+15:40:11 Build Finished (took 286ms)
+

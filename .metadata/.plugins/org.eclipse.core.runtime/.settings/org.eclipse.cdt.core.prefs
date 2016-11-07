@@ -1,0 +1,8 @@
+eclipse.preferences.version=1
+environment/workspace/GDK/delimiter=;
+environment/workspace/GDK/operation=replace
+environment/workspace/GDK/value=C\:/Users/Stephen/Documents/GitHub/VPGP-SGDK/sdk
+environment/workspace/append=true
+environment/workspace/appendContributed=false
+macros/workspace=<?xml version\="1.0" encoding\="UTF-8" standalone\="no"?>\r\n<macros>\r\n<stringMacro name\="GDK" type\="VALUE_PATH_DIR" value\="C\:/Users/Stephen/Documents/GitHub/VPGP-SGDK/sdk"/>\r\n</macros>\r\n
+org.eclipse.cdt.core.showSourceRootsAtTopLevelOfProject=true

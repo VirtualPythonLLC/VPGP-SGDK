@@ -1,0 +1,377 @@
+#include "genesis.h"
+#include "kdebug.h"
+
+#include "resource.h"
+#include "tile.h"
+#include "tilemap.h"
+#include "flip.h"
+#include "main.h"
+#include "pcm.h"
+
+
+#define PART    1
+
+
+static char str1[32];
+
+static u16 pal_even[16];
+static u16 pal_odd[16];
+
+static u16 pal_step[16] =
+{
+    0x555,
+    0x055,
+    0x550,
+    0x505,
+    0x005,
+    0x050,
+    0x500,
+    0x355,
+    0x553,
+    0x535,
+    0x335,
+    0x353,
+    0x533,
+    0x333,
+    0x033,
+    0x330
+};
+
+
+static vu8 paused;
+static u16 pal_step_index;
+
+static u16 genframe;
+static vu16 frame;
+
+static vu8 decomp_done;
+static vu8 flip_done;
+static u16 int_frame;
+
+static u16 tiles_to_transfer;
+static u16 manual;
+static u16 frame_divisor;
+static u32 wait;
+static u16 fps;
+static u16 show_fps;
+
+const u8* movie_src;
+
+
+static void joyEvent(u16 joy, u16 changed, u16 state);
+static void vblank();
+static void set_palette();
+static void reset();
+
+
+int main()
+{
+    paused = 0;
+    pal_step_index = 0;
+    manual = 0;
+    wait = 0;
+    frame = 0;
+    frame_divisor = 2;
+    fps = 0;
+    show_fps = 0;
+
+    JOY_setEventHandler(joyEvent);
+    JOY_setSupport(PORT_1, JOY_SUPPORT_3BTN);
+    JOY_setSupport(PORT_2, JOY_SUPPORT_OFF);
+
+    VDP_setHInterrupt(0);
+    VDP_setHilightShadow(0);
+
+#if (PART == 1)
+    VDP_drawText("Bad apple PV demo (first part)", 2, 0);
+#elif (PART == -1)
+    VDP_drawText("Bad apple PV demo", 2, 0);
+#endif
+
+#if ((PART == 1) || (PART == -1))
+    VDP_drawText("Only for Sega Megadrive/Genesis", 2, 1);
+
+    VDP_drawText("Video : 320x224 @ 30FPS, 2bpp", 7, 3);
+    VDP_drawText("Audio : 4bit ADPCM @ 13 Khz", 7, 4);
+    VDP_drawText("Duration : 3m39s", 4, 5);
+    VDP_drawText("Raw size : 120 MB", 4, 6);
+    VDP_drawText("Packed size : 8 MB", 1, 7);
+
+    VDP_drawText("Don't try to run that on a SNES as it", 0, 9);
+    VDP_drawText("does require Blast Processing.", 0, 10);
+
+    VDP_drawText("Up    --> display/hide FPS meter", 0, 13);
+    VDP_drawText("Start --> pause/unpause video", 0, 14);
+    VDP_drawText("A     --> change palette", 0, 15);
+    VDP_drawText("B     --> enable/disable benchmark mode", 0, 16);
+    VDP_drawText("C     --> restart the video", 0, 17);
+
+    VDP_drawText("If you pause or enable benchmark mode", 0, 20);
+    VDP_drawText("the video will try to resynchronize", 0, 21);
+    VDP_drawText("with music as soon you exit mode.", 0, 22);
+
+    VDP_drawText("Press START to continue.", 2, 25);
+
+#else
+    VDP_drawText("Bad apple PV demo (second part)", 2, 0);
+    VDP_drawText("Only for Sega Megadrive/Genesis...", 2, 1);
+#endif
+
+#if ((PART == 1) || (PART == -1))
+    JOY_waitPress(JOY_1, BUTTON_START);
+#else
+    waitMs(3000);
+#endif
+
+    VDP_fadeOutAll(20, 0);
+
+#if (PART == 2)
+    waitMs(500);
+#endif
+
+start_play:
+    VDP_clearTileMapRect(PLAN_A, 0, 0, 64, 64);
+    VDP_clearTileMapRect(PLAN_B, 0, 0, 64, 64);
+
+    reset();
+
+    SYS_setVIntCallback(vblank);
+
+#if (PART == -1)
+    while(frame < 6520)
+#elif (PART == 1)
+    while(frame < 3328)
+#else
+    while(frame < 3240)
+#endif
+    {
+        // synchronization with vblank process
+        while(decomp_done) wait++;
+        while(paused);
+
+#if ((PART == 1) || (PART == -1))
+        if (frame == 33)
+#else
+        if (frame == 17)
+#endif
+            startPlay(sample, sizeof(sample), 0);
+
+        tilemap_unpack();
+        tiles_to_transfer = tile_unpack();
+
+        // decompression completed
+        decomp_done = 1;
+    }
+
+    while(decomp_done);
+    while(!flip_done);
+
+#if (PART == 1)
+    waitMs(2500);
+    VDP_fadeOutAll(20, 0);
+#else
+    waitMs(1500);
+#endif
+
+    SYS_setVIntCallback(NULL);
+
+    VDP_init();
+    VDP_setPlanSize(64, 64);
+    VDP_setPalette(PAL0, palette_black);
+
+#if (PART == 1)
+    VDP_drawText("To be continued...", 5, 10);
+#else
+    VDP_drawText("Hope you enjoyed :)", 5, 10);
+    VDP_drawText("@2012  Stephane Dallongeville", 9, 27);
+#endif
+
+    SYS_setVIntCallback(vblank);
+
+    VDP_fadeInAll(palette_grey, 20, 0);
+
+    while(frame);
+
+    goto start_play;
+}
+
+static void reset()
+{
+    stopPlay();
+
+    paused = 0;
+    decomp_done = 0;
+    flip_done = 1;
+    int_frame = 0;
+    frame = 0;
+    genframe = 0;
+
+    movie_src = movie;
+
+    set_palette();
+    tile_init();
+    tilemap_init();
+}
+
+
+static void joyEvent(u16 joy, u16 changed, u16 state)
+{
+    if (changed & state & BUTTON_START)
+    {
+        // toggle pause
+        if (frame)
+            paused = 1 - paused;
+    }
+
+    if (changed & state & BUTTON_A)
+    {
+        // change palette
+        pal_step_index = (pal_step_index + 1) & 31;
+        set_palette();
+    }
+
+    if (changed & state & BUTTON_B)
+    {
+        // set manual mode
+        manual = 1 - manual;
+
+        if (manual) frame_divisor = 1;
+        else frame_divisor = 2;
+    }
+
+    if (changed & state & BUTTON_C)
+    {
+        // reset
+        reset();
+    }
+
+    if (changed & state & BUTTON_UP)
+    {
+        show_fps = 1 - show_fps;
+
+        if (!show_fps)
+            VDP_clearText(0, 0, 2);
+    }
+}
+
+static void vblank()
+{
+    genframe++;
+
+    if (!paused)
+    {
+        if (int_frame)
+            int_frame--;
+
+        if (int_frame == frame_divisor)
+        {
+            VDP_setPalette(PAL0, pal_even);
+            frame++;
+            fps = getFPS();
+        }
+
+        if (!manual)
+        {
+            const u16 fsync = genframe >> 1;
+
+            // synchronization
+            if ((fsync - 1) > frame) frame_divisor = 1;
+            else if ((fsync + 1) < frame) frame_divisor = 4;
+            else frame_divisor = 2;
+        }
+    }
+
+    // flip in process --> continu
+    if (!flip_done)
+    {
+        if (flip(0))
+            flip_done = 1;
+    }
+    // decompression completed --> start flip
+    else if (decomp_done && !int_frame)
+    {
+        flip_done = 0;
+
+        // set first palette
+        VDP_setPalette(PAL0, pal_odd);
+        int_frame = frame_divisor * 2;
+        frame++;
+        fps = getFPS();
+
+        // flip buffer
+        flip_buffer();
+
+        decomp_done = 0;
+
+        if (flip(tiles_to_transfer + 1))
+            flip_done = 1;
+    }
+
+//    if (baseTileInd == 16)
+//        VDP_fillTileMapRect(BPLAN, 0, 0, 0, 6, 3);
+//    else
+//        VDP_fillTileMapRect(BPLAN, 0, 0, 32, 6, 3);
+//
+//    uintToStr(genframe, str1, 6);
+//    VDP_drawText(str1, 0, 0);
+//    uintToStr(frame, str1, 6);
+//    VDP_drawText(str1, 0, 1);
+//    intToHex(wait, str1, 8);
+//    VDP_drawText(str1, 0, 2);
+//
+//    if (paused) VDP_drawText("pause", 0, 2);
+//    else VDP_clearText(0, 2, 5);
+
+    if (show_fps)
+    {
+        if (baseTileInd == 16)
+            VDP_clearTileMapRect(PLAN_B, 0, 0, 2, 1);
+        else
+            VDP_clearTileMapRect(PLAN_B, 0, 32, 2, 1);
+
+        uintToStr(fps, str1, 1);
+        VDP_drawText(str1, 0, 0);
+    }
+}
+
+static void set_palette()
+{
+    u16 v0, v1, v2, v3;
+
+    if (pal_step_index > 15)
+    {
+        const u16 step = pal_step[pal_step_index & 15];
+
+        v0 = 0xFFF;
+        v1 = v0 - step;
+        v2 = v1 - step;
+        v3 = v2 - step;
+    }
+    else
+    {
+        const u16 step = pal_step[pal_step_index];
+
+        v0 = 0x000;
+        v1 = v0 + step;
+        v2 = v1 + step;
+        v3 = v2 + step;
+    }
+
+
+    u16 i;
+
+    for(i = 0; i < 4; i++)
+    {
+        pal_odd[(i << 2) + 0] = v0;
+        pal_odd[(i << 2) + 1] = v1;
+        pal_odd[(i << 2) + 2] = v2;
+        pal_odd[(i << 2) + 3] = v3;
+
+        pal_even[0 + i] = v0;
+        pal_even[4 + i] = v1;
+        pal_even[8 + i] = v2;
+        pal_even[12 + i] = v3;
+    }
+}
+
+

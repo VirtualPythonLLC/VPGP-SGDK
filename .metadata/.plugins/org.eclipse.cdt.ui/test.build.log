@@ -1,0 +1,7 @@
+15:48:21 **** Incremental Build of configuration Release for project test ****
+make all 
+make: echo: Command not found
+make: *** [main.o] Error 127
+
+15:48:21 Build Finished (took 126ms)
+

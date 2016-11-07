@@ -1,0 +1,14 @@
+13:37:47 **** Incremental Build of configuration Default for project Bench ****
+"C:\\genesis\\sdk\\bin\\make" -f C:/genesis/sdk/makefile.gen Default 
+C:/genesis/sdk/bin/mkdir -p src/boot
+C:/genesis/sdk/bin/mkdir -p out
+C:/genesis/sdk/bin/mkdir -p out/src
+C:/genesis/sdk/bin/mkdir -p out/res
+echo "out/res/gfx.o out/res/spr_res.o out/src/math_test_a.o out/src/bg_test.o out/src/bmp_test.o out/src/main.o out/src/math_test.o out/src/mem_test.o out/src/spr_test.o" > out/cmd_
+C:/genesis/sdk/bin/gcc -BC:/genesis/sdk/bin -n -T C:/genesis/sdk/md.ld -nostdlib out/sega.o @out/cmd_ C:/genesis/sdk/lib/libmd.a C:/genesis/sdk/lib/libgcc.a -o out/rom.out
+C:/genesis/sdk/bin/rm out/cmd_
+C:/genesis/sdk/bin/objcopy -O binary out/rom.out out/rom.bin
+C:/genesis/sdk/bin/sizebnd out/rom.bin -sizealign 131072
+
+13:37:52 Build Finished (took 4s.244ms)
+

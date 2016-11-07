@@ -1,0 +1,64 @@
+13:38:12 **** Incremental Build of configuration Default for project propeller1 ****
+"C:\\genesis\\sdk\\bin\\make" -f C:/genesis/sdk/makefile.gen Default 
+C:/genesis/sdk/bin/mkdir -p src/boot
+C:/genesis/sdk/bin/mkdir -p out
+C:/genesis/sdk/bin/mkdir -p out/src
+C:/genesis/sdk/bin/mkdir -p out/res
+C:/genesis/sdk/bin/rescomp res/sprite.res res/sprite.s
+rescomp v1.5
+
+Resource: SPRITE foregroundSprite "data/foregroundtiles.bmp" 8 8
+
+--> executing plugin SPRITE...
+
+Resource: SPRITE backgroundSprite "data/backgroundtiles.bmp" 8 8
+
+--> executing plugin SPRITE...
+
+Resource: SPRITE playerSprite "data/player.bmp" 24 24
+
+--> executing plugin SPRITE...
+
+Resource: SPRITE enemySprite "data/enemy.bmp" 24 24
+
+--> executing plugin SPRITE...
+
+Resource: SPRITE bulletSprite "data/bullet.bmp" 8 8
+
+--> executing plugin SPRITE...
+
+Resource: SPRITE explosionSprite "data/explosion.bmp" 16 16
+
+--> executing plugin SPRITE...
+
+Resource: SPRITE coinSprite	"data/coin.bmp" 16 16
+
+--> executing plugin SPRITE...
+
+Resource: SPRITE radarArrowSprite "data/radar_arrow.bmp" 24 24
+
+--> executing plugin SPRITE...
+
+Resource: SPRITE heartSprite "data/heart.bmp" 8 32
+
+--> executing plugin SPRITE...
+Error: Unknown resource '; the binary resources don't get updated if you simply change a bitmap
+
+'Accepted resource types are:
+  BITMAP
+  PALETTE
+  TILESET
+  MAP
+  IMAGE
+  SPRITE
+  XGM
+  VGM
+  TFM
+  WAV
+  PCM
+  BIN
+make: *** [res/sprite.s] Error 1
+rm res/sprite.s
+
+13:38:16 Build Finished (took 4s.301ms)
+

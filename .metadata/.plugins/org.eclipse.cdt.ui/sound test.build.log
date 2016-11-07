@@ -1,0 +1,14 @@
+19:49:53 **** Incremental Build of configuration Default for project sound test ****
+"C:\\Users\\Stephen\\Documents\\GitHub\\VPGP-SGDK\\sdk\\bin\\make" -f C:/Users/Stephen/Documents/GitHub/VPGP-SGDK/sdk/makefile.gen Default 
+C:/Users/Stephen/Documents/GitHub/VPGP-SGDK/sdk/bin/mkdir -p src/boot
+C:/Users/Stephen/Documents/GitHub/VPGP-SGDK/sdk/bin/mkdir -p out
+C:/Users/Stephen/Documents/GitHub/VPGP-SGDK/sdk/bin/mkdir -p out/src
+C:/Users/Stephen/Documents/GitHub/VPGP-SGDK/sdk/bin/mkdir -p out/res
+echo "out/res/resources.o out/src/main.o" > out/cmd_
+C:/Users/Stephen/Documents/GitHub/VPGP-SGDK/sdk/bin/gcc -BC:/Users/Stephen/Documents/GitHub/VPGP-SGDK/sdk/bin -n -T C:/Users/Stephen/Documents/GitHub/VPGP-SGDK/sdk/md.ld -nostdlib out/sega.o @out/cmd_ C:/Users/Stephen/Documents/GitHub/VPGP-SGDK/sdk/lib/libmd.a C:/Users/Stephen/Documents/GitHub/VPGP-SGDK/sdk/lib/libgcc.a -o out/rom.out
+C:/Users/Stephen/Documents/GitHub/VPGP-SGDK/sdk/bin/rm out/cmd_
+C:/Users/Stephen/Documents/GitHub/VPGP-SGDK/sdk/bin/objcopy -O binary out/rom.out out/rom.bin
+C:/Users/Stephen/Documents/GitHub/VPGP-SGDK/sdk/bin/sizebnd out/rom.bin -sizealign 131072
+
+19:49:55 Build Finished (took 1s.986ms)
+

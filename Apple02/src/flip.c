@@ -1,0 +1,98 @@
+#include "genesis.h"
+#include "kdebug.h"
+
+#include "tilemap.h"
+#include "tile.h"
+
+
+#define TILES_PER_FRAME 170
+
+
+static u16 tileInd;
+
+
+void flip_buffer()
+{
+    tileInd = baseTileInd;
+
+    // primary buffer will be send to VRAM --> switch VRAM to secondary buffer
+    if (baseTileInd == 16)
+    {
+        VDP_setVerticalScroll(PLAN_B, 0);
+        baseTileInd = 16 + MAXTILE_PER_FRAME;
+    }
+    else
+    {
+        VDP_setVerticalScroll(PLAN_B, 32 * 8);
+        baseTileInd = 16;
+    }
+
+    // flip tilemap unpack buffer
+    u16* tmpu16 = tilemapUnpackRead;
+    tilemapUnpackRead = tilemapUnpackWrite;
+    tilemapUnpackWrite = tmpu16;
+
+    // flip tilemap buffer
+    tmpu16 = tilemapRead;
+    tilemapRead = tilemapWrite;
+    tilemapWrite = tmpu16;
+
+    // flip tile buffer
+    u8* tmpu8 = tileRead;
+    tileRead = tileWrite;
+    tileWrite = tmpu8;
+}
+
+u16 flip(u16 tiles)
+{
+    static u32* tileSrc;
+    static s16 tileLeft;
+    static u16 tilesDone;
+
+    // start flip
+    if (tiles)
+    {
+        tileLeft = tiles - 1;
+
+        if (tileLeft > 0)
+        {
+            tilesDone = 0;
+            tileSrc = (u32*) tileRead;
+        }
+        else
+            tilesDone = 1;
+    }
+
+    // send tiles to VRAM
+    if (!tilesDone)
+    {
+        u16 num;
+
+        if (tileLeft > TILES_PER_FRAME) num = TILES_PER_FRAME;
+        else num = tileLeft;
+
+        VDP_loadTileData(tileSrc, tileInd, num, 1);
+
+        // TILES_PER_FRAME tiles at once
+        tileSrc += TILES_PER_FRAME * 8;
+        tileInd += TILES_PER_FRAME;
+        tileLeft -= TILES_PER_FRAME;
+
+        // tiles transfer done
+        if (tileLeft <= 0) tilesDone = 1;
+
+        // means that transfer is not yet completed
+        return 0;
+    }
+    else
+    {
+        // send tilemap to VRAM
+        if (baseTileInd == 16)
+            VDP_setTileMapData(VDP_PLAN_B, tilemapRead, 0, 64 * TILEMAP_HEIGHT, 1);
+        else
+            VDP_setTileMapData(VDP_PLAN_B, tilemapRead, 32 * 64, 64 * TILEMAP_HEIGHT, 1);
+
+        // means that transfer is completed
+        return 1;
+    }
+}

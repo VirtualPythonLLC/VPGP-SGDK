@@ -1,0 +1,9 @@
+15:57:59 **** Incremental Build of configuration Default for project cube_flat ****
+"C:\\genesis\\sdk\\bin\\make" -f C:/genesis/sdk/makefile.gen Default 
+Cannot run program "C:\genesis\sdk\bin\make": Launching failed
+
+Error: Program "C:\genesis\sdk\bin\make" not found in PATH
+PATH=[C:\genesis\sdk;C:\Program Files (x86)\NVIDIA Corporation\PhysX\Common]
+
+15:57:59 Build Finished (took 37ms)
+

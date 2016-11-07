@@ -1,0 +1,15 @@
+13:38:06 **** Incremental Build of configuration Default for project moon_test ****
+"C:\\genesis\\sdk\\bin\\make" -f C:/genesis/sdk/makefile.gen Default 
+C:/genesis/sdk/bin/mkdir -p src/boot
+C:/genesis/sdk/bin/mkdir -p out
+C:/genesis/sdk/bin/mkdir -p out/src
+C:/genesis/sdk/bin/mkdir -p out/res
+C:/genesis/sdk/bin/gcc -m68000 -Wall -fno-builtin -Iinc -Isrc -Ires -IC:/genesis/sdk/inc -IC:/genesis/sdk/res -BC:/genesis/sdk/bin -O1 -fomit-frame-pointer -c main.c -o out/main.o
+main.c: In function `main':
+main.c:12: error: structure has no member named `width'
+main.c:14: error: structure has no member named `height'
+main.c:24: warning: passing arg 1 of `VDP_loadBMPTileData' from incompatible pointer type
+make: *** [out/main.o] Error 1
+
+13:38:09 Build Finished (took 2s.444ms)
+

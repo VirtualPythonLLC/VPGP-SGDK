@@ -1,0 +1,14 @@
+13:38:26 **** Build of configuration Default for project test02 ****
+"C:\\genesis\\sdk\\bin\\make" -f C:/genesis/sdk/makefile.gen Default 
+C:/genesis/sdk/bin/mkdir -p src/boot
+C:/genesis/sdk/bin/mkdir -p out
+C:/genesis/sdk/bin/mkdir -p out/src
+C:/genesis/sdk/bin/mkdir -p out/res
+echo "out/main.o" > out/cmd_
+C:/genesis/sdk/bin/gcc -BC:/genesis/sdk/bin -n -T C:/genesis/sdk/md.ld -nostdlib out/sega.o @out/cmd_ C:/genesis/sdk/lib/libmd.a C:/genesis/sdk/lib/libgcc.a -o out/rom.out
+C:/genesis/sdk/bin/rm out/cmd_
+C:/genesis/sdk/bin/objcopy -O binary out/rom.out out/rom.bin
+C:/genesis/sdk/bin/sizebnd out/rom.bin -sizealign 131072
+
+13:38:30 Build Finished (took 3s.964ms)
+

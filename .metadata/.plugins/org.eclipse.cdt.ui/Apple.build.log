@@ -1,0 +1,14 @@
+14:37:45 **** Incremental Build of configuration Default for project Apple ****
+"C:\\genesis\\sdk\\bin\\make" -f C:/genesis/sdk/makefile.gen Default 
+C:/genesis/sdk/bin/mkdir -p src/boot
+C:/genesis/sdk/bin/mkdir -p out
+C:/genesis/sdk/bin/mkdir -p out/src
+C:/genesis/sdk/bin/mkdir -p out/res
+echo "out/res/resource.o out/src/z80_drv.o out/src/tile_a.o out/src/tile_dico_a.o out/src/tilemap_a.o out/src/flip.o out/src/main.o out/src/pcm.o out/src/tile.o out/src/tilemap.o" > out/cmd_
+C:/genesis/sdk/bin/gcc -BC:/genesis/sdk/bin -n -T C:/genesis/sdk/md.ld -nostdlib out/sega.o @out/cmd_ C:/genesis/sdk/lib/libmd.a C:/genesis/sdk/lib/libgcc.a -o out/rom.out
+C:/genesis/sdk/bin/rm out/cmd_
+C:/genesis/sdk/bin/objcopy -O binary out/rom.out out/rom.bin
+C:/genesis/sdk/bin/sizebnd out/rom.bin -sizealign 131072
+
+14:37:46 Build Finished (took 1s.576ms)
+
